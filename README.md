@@ -114,6 +114,25 @@ cmake --build build --target kv_store_benchmark
 See [docs/Benchmarks.md](docs/Benchmarks.md) for methodology and result
 templates.
 
+### Benchmarking on EC2
+
+Publication benchmark runs should happen on the target EC2 instance, not on a
+local development machine. Use the existing EC2 host at public IPv4
+`3.20.238.237`:
+
+```bash
+ssh ubuntu@3.20.238.237
+cd ~/concurrent-kv-store
+git pull
+chmod +x scripts/run_ec2_benchmarks.sh
+./scripts/run_ec2_benchmarks.sh
+```
+
+The script writes raw text, JSON, and metadata files under
+`benchmark_results/`. Summarize those results manually in
+[docs/Benchmarks.md](docs/Benchmarks.md) and
+[docs/Benchmark_History.md](docs/Benchmark_History.md).
+
 ## Repository Tour
 
 ```text
@@ -135,6 +154,10 @@ The benchmark suite currently covers:
 | `BM_Get` | Successful in-memory lookup path |
 | `BM_Delete` | Delete path after deterministic preload |
 | `BM_MixedReadWrite70_30` | Deterministic 70% read / 30% write flow |
+| `BM_DurableSetWithWalFlush` | WAL-backed Set path |
+| `BM_SnapshotSave` | Full snapshot write and verification |
+| `BM_SnapshotLoad` | Snapshot load into memory |
+| `BM_WalReplay` | Replay checksum-framed WAL records |
 | `BM_RecoveryFromSnapshotAndWalTail` | Snapshot load plus WAL tail replay |
 | `BM_RecoveryFromCompactedSnapshotAndWalTail` | Snapshot plus rotated WAL recovery |
 | `BM_SnapshotCompaction` | Snapshot verification and WAL rotation |

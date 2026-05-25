@@ -1,20 +1,53 @@
 # Benchmark History
 
-This file is the curated history for benchmark runs worth preserving. The
-project currently has no official CMake/Google Benchmark baseline after the
-refactor.
+This file is the curated history for benchmark runs worth preserving. It should
+contain summaries from intentional benchmark runs only. Do not add local or fake
+results.
 
-## Baseline Slots
+## Entry Template
 
-| Date | Version/Commit | Environment | Notes |
-| --- | --- | --- | --- |
-| TBD | TBD | TBD | First Release CMake benchmark run. |
+Copy this block when publishing a new EC2 benchmark run:
 
-## Update Checklist
+```text
+Date:
+Commit:
+Branch:
+EC2 public IPv4: 3.20.238.237
+Instance type:
+CPU:
+vCPU:
+Memory:
+OS:
+Compiler:
+CMake:
+Build flags:
+Benchmark script:
+Raw result path:
+Summary:
+Improvements:
+Regressions:
+Caveats:
+Next steps:
+```
 
-1. Build with `-DCMAKE_BUILD_TYPE=Release`.
-2. Run `./build/kv_store_benchmark`.
-3. Save JSON and text artifacts under `benchmarks/results/` if the run should
-   be retained.
-4. Copy headline rows into `docs/Benchmarks.md`.
-5. Add a dated summary row here with commit, hardware, compiler, and notes.
+## Publication Checklist
+
+1. Run the EC2 workflow from the repository root:
+
+   ```bash
+   ssh ubuntu@3.20.238.237
+   cd ~/concurrent-kv-store
+   git pull
+   chmod +x scripts/run_ec2_benchmarks.sh
+   ./scripts/run_ec2_benchmarks.sh
+   ```
+
+2. Copy environment metadata from
+   `benchmark_results/<YYYYMMDD_HHMMSS>/metadata.txt` into
+   `docs/Benchmarks.md`.
+3. Summarize aggregate Google Benchmark rows from
+   `benchmark_results/<YYYYMMDD_HHMMSS>/benchmarks.json`.
+4. Add one dated entry here with the commit, EC2 instance type, build flags,
+   high-level summary, notable improvements/regressions, and raw artifact path.
+5. Commit only curated docs updates unless a raw artifact is intentionally
+   archived elsewhere.

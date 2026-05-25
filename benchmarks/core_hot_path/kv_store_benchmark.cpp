@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -152,6 +153,102 @@ void BM_MixedReadWrite70_30(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations());
 }
 
+void BM_DurableSetWithWalFlush(benchmark::State& state) {
+  const auto operation_count = static_cast<std::size_t>(state.range(0));
+  const auto keys = MakeKeys(operation_count);
+  const auto values = MakeValues(operation_count);
+
+  for (auto _ : state) {
+    state.PauseTiming();
+    BenchmarkTempDir temp_dir;
+    const std::string wal_path = temp_dir.FilePath("kv_store.wal");
+    kv::persistence::WriteAheadLog wal(wal_path);
+    kv::store::KVStore store(&wal);
+    state.ResumeTiming();
+
+    for (std::size_t index = 0; index < operation_count; ++index) {
+      store.Set(keys[index], values[index]);
+    }
+    benchmark::DoNotOptimize(store.Size());
+    benchmark::ClobberMemory();
+  }
+
+  state.SetItemsProcessed(state.iterations() * operation_count);
+}
+
+void BM_SnapshotSave(benchmark::State& state) {
+  const auto key_count = static_cast<std::size_t>(state.range(0));
+  const auto keys = MakeKeys(key_count);
+  const auto values = MakeValues(key_count);
+  std::unordered_map<std::string, std::string> snapshot_data;
+  for (std::size_t index = 0; index < key_count; ++index) {
+    snapshot_data[keys[index]] = values[index];
+  }
+
+  for (auto _ : state) {
+    state.PauseTiming();
+    BenchmarkTempDir temp_dir;
+    const std::string snapshot_path = temp_dir.FilePath("kv_store.snapshot");
+    kv::persistence::Snapshot snapshot(snapshot_path);
+    state.ResumeTiming();
+
+    snapshot.SaveVerified(snapshot_data, 0);
+    benchmark::ClobberMemory();
+  }
+
+  state.SetItemsProcessed(state.iterations() * key_count);
+}
+
+void BM_SnapshotLoad(benchmark::State& state) {
+  const auto key_count = static_cast<std::size_t>(state.range(0));
+  const auto keys = MakeKeys(key_count);
+  const auto values = MakeValues(key_count);
+
+  BenchmarkTempDir temp_dir;
+  const std::string snapshot_path = temp_dir.FilePath("kv_store.snapshot");
+  kv::persistence::Snapshot snapshot(snapshot_path);
+  std::unordered_map<std::string, std::string> snapshot_data;
+  for (std::size_t index = 0; index < key_count; ++index) {
+    snapshot_data[keys[index]] = values[index];
+  }
+  snapshot.SaveVerified(snapshot_data, 0);
+
+  for (auto _ : state) {
+    std::unordered_map<std::string, std::string> loaded;
+    const auto result = snapshot.Load(loaded);
+    benchmark::DoNotOptimize(static_cast<int>(result.loaded));
+    benchmark::DoNotOptimize(loaded.size());
+    benchmark::ClobberMemory();
+  }
+
+  state.SetItemsProcessed(state.iterations() * key_count);
+}
+
+void BM_WalReplay(benchmark::State& state) {
+  const auto record_count = static_cast<std::size_t>(state.range(0));
+  const auto keys = MakeKeys(record_count);
+  const auto values = MakeValues(record_count);
+
+  BenchmarkTempDir temp_dir;
+  const std::string wal_path = temp_dir.FilePath("kv_store.wal");
+  {
+    kv::persistence::WriteAheadLog wal(wal_path);
+    for (std::size_t index = 0; index < record_count; ++index) {
+      wal.AppendSet(keys[index], values[index]);
+    }
+  }
+
+  for (auto _ : state) {
+    kv::persistence::WriteAheadLog wal(wal_path);
+    std::unordered_map<std::string, std::string> recovered;
+    benchmark::DoNotOptimize(wal.Replay(recovered));
+    benchmark::DoNotOptimize(recovered.size());
+    benchmark::ClobberMemory();
+  }
+
+  state.SetItemsProcessed(state.iterations() * record_count);
+}
+
 void BM_RecoveryFromSnapshotAndWalTail(benchmark::State& state) {
   const auto base_count = static_cast<std::size_t>(state.range(0));
   const std::size_t tail_count = base_count / 10;
@@ -259,6 +356,10 @@ BENCHMARK(BM_Put)->Arg(1000)->Arg(10000);
 BENCHMARK(BM_Get)->Arg(1000)->Arg(10000);
 BENCHMARK(BM_Delete)->Arg(1000)->Arg(10000);
 BENCHMARK(BM_MixedReadWrite70_30)->Arg(1000)->Arg(10000);
+BENCHMARK(BM_DurableSetWithWalFlush)->Arg(1000)->Arg(10000);
+BENCHMARK(BM_SnapshotSave)->Arg(1000)->Arg(10000);
+BENCHMARK(BM_SnapshotLoad)->Arg(1000)->Arg(10000);
+BENCHMARK(BM_WalReplay)->Arg(1000)->Arg(10000);
 BENCHMARK(BM_RecoveryFromSnapshotAndWalTail)->Arg(1000)->Arg(10000);
 BENCHMARK(BM_RecoveryFromCompactedSnapshotAndWalTail)->Arg(1000)->Arg(10000);
 BENCHMARK(BM_SnapshotCompaction)->Arg(1000)->Arg(10000);

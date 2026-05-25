@@ -14,6 +14,15 @@ All notable changes to this project will be documented in this file.
   WAL fallback, and repeated compaction idempotence.
 - Added benchmark coverage for compacted snapshot recovery and snapshot
   compaction cost.
+- Added an EC2 benchmark publication workflow for `3.20.238.237`, including a
+  timestamped benchmark script, ignored raw result directory, benchmark docs
+  templates, and methodology notes consistent with the matching-engine EC2
+  process without treating the workloads as directly comparable.
+- Expanded Google Benchmark coverage for durable WAL-backed Set, snapshot save,
+  snapshot load, WAL replay, and snapshot-plus-WAL-tail recovery publication
+  rows.
+- Ran the benchmark workflow on the EC2 `c7i-flex.large` host and kept raw
+  artifacts outside git under `benchmark_results/`.
 
 ## v0.3.0 -> Modern CMake + C++20 Project Foundation
 
