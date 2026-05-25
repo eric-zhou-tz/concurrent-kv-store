@@ -3,9 +3,13 @@
 ## Overview
 
 Concurrent KV Store is currently a single-process C++20 key-value store with a
-small storage API and durable recovery path. The design favors correctness,
-traceability, and clear module boundaries before introducing concurrency or a
-disk-optimized storage engine.
+small storage API, coarse-grained reader/writer synchronization, and a durable
+recovery path. The design favors correctness, traceability, and clear module
+boundaries before introducing a disk-optimized storage engine.
+
+Phase 0.5 is a correctness-first concurrency phase. It does not implement
+sharding, lock-free data structures, async WAL queues, networking, or
+distributed replication.
 
 ```text
 Command text
@@ -41,6 +45,24 @@ KVStore
 When constructed with persistence dependencies, mutating operations append to
 the WAL before updating memory. This keeps successful in-memory writes
 recoverable after a process crash.
+
+`KVStore` is thread-safe through one `std::shared_mutex`:
+
+- `Get()`, `Contains()`, and `Size()` take a shared lock, so multiple readers
+  may proceed concurrently.
+- `Set()`, `Delete()`, `Clear()`, `ClearPersistence()`, snapshot save,
+  compaction, snapshot load, and WAL replay take an exclusive lock.
+- Write operations are serialized, including WAL appends.
+- Snapshot and compaction observe one consistent map state because snapshot
+  iteration happens while the exclusive store lock is held.
+- Recovery methods are internally exclusive, but operationally they should run
+  during startup before serving concurrent traffic.
+
+The synchronization boundary is one `KVStore` instance. Passing the same
+`WriteAheadLog` or `Snapshot` object to other threads and using it directly, or
+sharing the same persistence object across multiple store instances, is
+unsupported because those objects are protected only by the store instance that
+is currently calling them.
 
 ### WriteAheadLog
 
@@ -122,6 +144,13 @@ The project currently chooses WAL rotation for compaction:
 3. Rotate the WAL to a new empty file only after verification succeeds.
 4. Continue appending new mutations to the empty WAL.
 
+Automatic snapshot checks happen on the write path after a mutation increments
+the write counter. The implementation avoids recursive locking by using private
+helpers that assume the caller already holds the exclusive `KVStore` lock:
+`MaybeSnapshotLocked()`, `SaveSnapshotLocked()`, and
+`CompactPersistenceLocked()`. Public snapshot and compaction methods acquire
+the lock once, then delegate to those helpers.
+
 Normal recovery after compaction is:
 
 1. Load the verified snapshot.
@@ -147,12 +176,34 @@ The CLI parser and server are intentionally separate from storage. Parser tests
 can stay focused on command framing, while storage tests exercise the API
 directly.
 
+The interactive CLI is a single-process REPL over the thread-safe store. It now
+prints the project version and the Phase 0.5 concurrency contract at startup,
+and exposes `INFO`, `VERSION`, and `STATUS` aliases for the same runtime
+summary. The CLI does not create multiple client sessions by itself; concurrent
+access is provided by the `KVStore` API for callers that use the store from
+multiple threads.
+
+Current CLI commands:
+
+- `SET <key> <value>`
+- `GET <key>`
+- `DEL|DELETE <key>`
+- `COMPACT|SNAPSHOT`
+- `CLEAR PERSISTENCE`
+- `INFO|VERSION|STATUS`
+- `HELP`
+- `EXIT`
+
+`INFO` reports the build version, current entry count, concurrency model, and
+durability serialization contract. Startup recovery runs before the REPL begins,
+so replay does not race with live CLI commands.
+
 ## Complexity
 
 | Operation | Complexity | Notes |
 | --- | ---: | --- |
 | `Set` | O(1) average | Hash insert/overwrite; persisted mode also appends WAL. |
-| `Get` | O(1) average | Hash lookup. |
+| `Get` | O(1) average | Hash lookup under a shared reader lock. |
 | `Delete` | O(1) average | Hash erase; delete is idempotent during replay. |
 | WAL append | O(K + V) | Writes framed key/value bytes and flushes. |
 | WAL replay | O(N) | Applies ordered mutation records. |
@@ -182,7 +233,8 @@ recovery work by replacing unbounded WAL replay with snapshot load plus a
 shorter current WAL tail.
 
 See [Benchmarks](Benchmarks.md) for the current EC2 Release baseline,
-methodology, and caveats.
+methodology, and caveats. The published EC2 tables are pre-Phase-0.5
+concurrency results until a clean refresh is recorded.
 
 ## Tradeoffs
 
@@ -192,12 +244,12 @@ methodology, and caveats.
 | Flush on every WAL append | Conservative durability, lower write throughput. |
 | Full snapshots | Easy recovery model, higher checkpoint write amplification. |
 | WAL rotation after snapshots | Simple cleanup policy, but crash before rotation can replay covered records. |
-| Single process / single writer | Clean invariants while persistence matures, no concurrent clients yet. |
+| Coarse reader/writer lock | Correct concurrent access with simple invariants, but writers and durability operations are serialized. |
 | Host-endian binary format | Simple early implementation, future portability work needed. |
 | CRC32 WAL records | Dependency-free corruption detection, not cryptographic integrity. |
 
 ## Future Direction
 
-The next architecture steps are reader/writer synchronization, segmented WAL
-files, explicit binary endianness, and eventually a log-structured storage
-engine.
+The next architecture steps are contention benchmarks, sharded maps with
+per-shard locks, a single WAL writer or group commit path, segmented WAL files,
+explicit binary endianness, and eventually a log-structured storage engine.

@@ -4,6 +4,11 @@ This file records curated benchmark runs worth preserving. Raw Google Benchmark
 JSON/text artifacts stay outside git; published rows here should be copied from
 intentional EC2 runs with environment metadata.
 
+Current project status: `v0.5.0` has added coarse reader/writer synchronization
+and CLI status output. The only published EC2 run below predates that change,
+so it is a pre-concurrency baseline and should not be used to claim Phase 0.5
+performance.
+
 ## 2026-05-25T08:35:47Z - First EC2 Baseline
 
 | Field | Value |
@@ -54,12 +59,16 @@ Caveats:
   were committed afterward as `d7adcb4`; rerun from a clean commit if strict
   release provenance is required.
 - Filesystem-sensitive rows may vary with EC2 storage/cache state.
+- This run predates the Phase 0.5 `std::shared_mutex` lock insertion and CLI
+  status updates.
 
 Next steps:
 
 - Add CTest execution and pass-count capture to the EC2 runner.
 - Rerun from a clean commit for a stricter publication baseline.
 - Add CLI/public-boundary benchmarks for parser/server/output formatting cost.
+- Add read-only and mixed read/write contention rows for the coarse
+  reader/writer-lock implementation.
 
 ## Entry Template
 
@@ -85,6 +94,8 @@ Summary:
 Improvements:
 Regressions:
 Caveats:
+Concurrency model:
+CLI status surface:
 Next steps:
 ```
 

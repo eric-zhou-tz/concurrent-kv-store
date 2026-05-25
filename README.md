@@ -1,17 +1,24 @@
 # Concurrent KV Store in Modern C++
 
 A key-value store built from first principles in modern C++, with WAL
-persistence, snapshot recovery, benchmarking, and an eventual concurrent
-storage-engine architecture.
+persistence, snapshot recovery, correctness-first concurrency, benchmarking,
+and an eventual storage-engine architecture.
 
 The current implementation is intentionally small and inspectable: a
 single-process CLI routes parsed commands into an in-memory `KVStore`, while
 the persistence layer records durable mutations and restores state from
 snapshots plus WAL tail replay.
 
+Current release status: `v0.5.0` adds coarse-grained reader/writer
+synchronization with `std::shared_mutex`. Concurrent readers can proceed
+together, while writes, snapshots, compaction, recovery, clear, and persistence
+reset are exclusive. The CLI reports this through `INFO`, `VERSION`, or
+`STATUS`.
+
 ## Table of Contents
 
 - [Performance Highlights](#performance-highlights)
+- [Current Status](#current-status)
 - [Architecture](#architecture)
 - [Features](#features)
 - [Quick Start](#quick-start)
@@ -41,6 +48,18 @@ workloads are different.
 See [docs/Benchmarks.md](docs/Benchmarks.md) for methodology, caveats, raw
 artifact paths, and benchmark history.
 
+## Current Status
+
+| Area | Current Behavior |
+| --- | --- |
+| Version | `v0.5.0` |
+| Concurrency | Coarse `std::shared_mutex`: concurrent reads, serialized writes and durability operations |
+| Durability | WAL append happens before in-memory mutation; snapshots and compaction are exclusive |
+| Recovery | Startup loads snapshot first, then replays the checksum-verified WAL tail |
+| CLI | `INFO`, `VERSION`, and `STATUS` print version, entry count, concurrency model, and durability notes |
+| Validation | Latest local validation: Release build plus `85/85` CTest cases passing |
+| Benchmarks | Published EC2 numbers are the pre-concurrency baseline; no official contention rows yet |
+
 ## Architecture
 
 ```text
@@ -69,7 +88,9 @@ Additional docs:
 - Corruption-aware WAL replay with safe truncation to the last valid record
 - Verified full-state snapshot checkpoints with WAL rotation compaction
 - Startup recovery from snapshot plus checksum-verified WAL tail
-- Interactive CLI
+- Coarse-grained reader/writer synchronization for concurrent readers and
+  serialized writes
+- Interactive CLI with `INFO`/`VERSION`/`STATUS`
 - GoogleTest coverage for storage and persistence behavior
 - Google Benchmark hot-path benchmarks
 
@@ -98,6 +119,17 @@ Run the CLI:
 Example session:
 
 ```text
+Concurrent KV Store v0.5.0
+Concurrency: coarse shared_mutex: concurrent reads, serialized writes and durability
+Loading snapshot...
+Loaded 0 snapshot entrie(s)
+Replaying WAL...
+Recovered 0 operation(s)
+kv-store> INFO
+Concurrent KV Store v0.5.0
+entries: 0
+concurrency: coarse shared_mutex: concurrent reads, serialized writes and durability
+durability: WAL appends are serialized before memory mutation; snapshot, compaction, and recovery are exclusive
 kv-store> SET language cpp
 OK
 kv-store> GET language
@@ -124,6 +156,19 @@ cmake --build build --target kv_store_tests
 
 cmake --build build --target kv_store_stress_tests
 ./build/kv_store_stress_tests
+```
+
+ThreadSanitizer validation is opt-in and intended for Linux Clang/GCC Debug
+builds:
+
+```bash
+cmake -S . -B build-tsan \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCONCURRENT_KV_STORE_ENABLE_TSAN=ON \
+  -DCONCURRENT_KV_STORE_BUILD_TESTS=ON \
+  -DCONCURRENT_KV_STORE_BUILD_BENCHMARKS=OFF
+cmake --build build-tsan
+ctest --test-dir build-tsan --output-on-failure
 ```
 
 ### Benchmarks
@@ -188,12 +233,19 @@ The benchmark suite currently covers:
 Latest EC2 results, methodology, caveats, and raw artifact paths are documented
 in [docs/Benchmarks.md](docs/Benchmarks.md). Benchmark results are
 machine-specific; record compiler, build type, CPU, OS, commit, and command line
-with every published run.
+with every published run. The current published EC2 baseline predates the
+`v0.5.0` lock insertion, so it should be treated as a pre-concurrency baseline
+until a clean refresh is published.
 
 ## Engineering Notes
 
-- The storage core is deliberately single-threaded today. Concurrency will be
-  added after the single-writer persistence contract stays stable under tests.
+- The storage core uses a correctness-first `std::shared_mutex` model:
+  concurrent readers can proceed together, while writes, snapshots,
+  compaction, recovery, clear, and persistence reset are exclusive.
+- WAL appends remain serialized through `KVStore`, preserving the existing
+  write-ahead durability contract under concurrent callers.
+- Sharing one WAL or Snapshot object across multiple stores or using it
+  directly from another thread is outside the synchronization contract.
 - WAL records are length-framed, checksum-protected, and bounded to avoid
   unbounded allocation while recovering corrupted files.
 - WAL replay applies only complete checksum-verified records. It stops at the
@@ -204,5 +256,8 @@ with every published run.
   remains untouched.
 - Snapshots duplicate full state by design. Incremental checkpoints are future
   storage-engine work.
+- Current concurrency is coarse-grained, not sharded or lock-free. Future
+  performance work may add sharded maps, per-shard locks, a single WAL writer,
+  batched flush/group commit, segmented WAL, or an LSM/memtable-style engine.
 - The CLI is an integration boundary, not the storage API. Tests and benchmarks
   exercise `KVStore` and persistence components directly where possible.

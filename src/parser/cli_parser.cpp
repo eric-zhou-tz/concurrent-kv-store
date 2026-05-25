@@ -128,6 +128,16 @@ Command CliParser::Parse(const std::string& input) const {
     return command;
   }
 
+  if (verb == "INFO" || verb == "VERSION" || verb == "STATUS") {
+    if (tokens.size() != 1) {
+      return MakeInvalidCommand("usage: INFO");
+    }
+
+    Command command;
+    command.type = CommandType::kInfo;
+    return command;
+  }
+
   if (verb == "HELP") {
     Command command;
     command.type = CommandType::kHelp;

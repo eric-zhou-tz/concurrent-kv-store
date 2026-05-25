@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.5.0 -> Correctness-First Concurrency
+
+- Added `std::shared_mutex` synchronization to `KVStore`: concurrent
+  `Get`/`Contains`/`Size` calls share the read lock, while writes, clear,
+  persistence reset, snapshots, compaction, snapshot load, and WAL replay are
+  exclusive.
+- Preserved the existing durability contract under concurrent callers:
+  `Set`/`Delete` append to WAL before mutating memory, and WAL appends remain
+  serialized through the store write lock.
+- Refactored automatic snapshotting into locked private helpers so the write
+  path can compact without recursively calling public locking APIs.
+- Added deterministic concurrency unit tests for concurrent readers, writers,
+  mixed readers/writers, deletes after concurrent writes, WAL-backed concurrent
+  writes and recovery, snapshot during reads, and compaction after concurrent
+  writes.
+- Added a deterministic concurrency stress test with disjoint thread-owned key
+  ranges and a predictable final reference state.
+- Added opt-in CMake ThreadSanitizer support through
+  `CONCURRENT_KV_STORE_ENABLE_TSAN` for non-MSVC debug validation.
+- Updated the CLI startup/help surface for v0.5.0 and added
+  `INFO`/`VERSION`/`STATUS` aliases that print entry count, concurrency model,
+  and durability serialization notes.
+- Updated front-facing docs to make the current release status explicit:
+  coarse reader/writer locking, serialized durability operations, CLI status
+  command, TSan instructions, and the fact that published EC2 benchmark numbers
+  are pre-concurrency.
+- Documented the coarse reader/writer-lock model and future performance work:
+  sharded maps, per-shard locks, single WAL writer/group commit, configurable
+  fsync policy, segmented WAL, and eventual storage-engine evolution.
+- Verified the phase locally with a Release build and `85/85` CTest cases
+  passing.
+
 ## v0.4.0 -> Snapshot Compaction and WAL Rotation
 
 - Added verified snapshot compaction with WAL rotation. `COMPACT`/`SNAPSHOT`

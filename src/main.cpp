@@ -1,5 +1,6 @@
 #include <iostream>
 
+#include "common/version.h"
 #include "parser/cli_parser.h"
 #include "persistence/snapshot.h"
 #include "persistence/wal.h"
@@ -16,6 +17,10 @@ int main(int argc, char* argv[]) {
         std::cerr << "usage: " << argv[0] << '\n';
         return 1;
     }
+
+    std::cout << "Concurrent KV Store v" << kv::common::kProjectVersion
+              << '\n';
+    std::cout << "Concurrency: " << kv::common::kConcurrencyModel << '\n';
 
     // Wire persistence into the store before replay so subsequent mutations are
     // durably logged.

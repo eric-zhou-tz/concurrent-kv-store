@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(
     concurrent_kv_store
-    VERSION 0.3.0
+    VERSION 0.5.0
     DESCRIPTION "Modern C++ key-value store with WAL persistence and snapshot recovery"
     LANGUAGES CXX
 )
@@ -11,6 +11,24 @@ include(FetchContent)
 
 option(CONCURRENT_KV_STORE_BUILD_TESTS "Build GoogleTest suites" ON)
 option(CONCURRENT_KV_STORE_BUILD_BENCHMARKS "Build Google Benchmark suites" ON)
+option(CONCURRENT_KV_STORE_ENABLE_TSAN "Build with ThreadSanitizer instrumentation" OFF)
+
+find_package(Threads REQUIRED)
+
+if(CONCURRENT_KV_STORE_ENABLE_TSAN)
+    if(MSVC)
+        message(WARNING "ThreadSanitizer is not configured for MSVC; ignoring CONCURRENT_KV_STORE_ENABLE_TSAN")
+    else()
+        add_library(concurrent_kv_store_tsan INTERFACE)
+        target_compile_options(concurrent_kv_store_tsan INTERFACE
+            -fsanitize=thread
+            -fno-omit-frame-pointer
+        )
+        target_link_options(concurrent_kv_store_tsan INTERFACE
+            -fsanitize=thread
+        )
+    endif()
+endif()
 
 add_library(kv_store_core
     src/common/string_utils.cpp
@@ -27,6 +45,20 @@ target_include_directories(kv_store_core
     PUBLIC
         ${PROJECT_SOURCE_DIR}/include
 )
+
+target_compile_definitions(kv_store_core
+    PUBLIC
+        CONCURRENT_KV_STORE_VERSION="${PROJECT_VERSION}"
+)
+
+target_link_libraries(kv_store_core
+    PUBLIC
+        Threads::Threads
+)
+
+if(TARGET concurrent_kv_store_tsan)
+    target_link_libraries(kv_store_core PUBLIC concurrent_kv_store_tsan)
+endif()
 
 set_target_properties(kv_store_core PROPERTIES
     CXX_EXTENSIONS OFF
@@ -57,6 +89,8 @@ if(CONCURRENT_KV_STORE_BUILD_TESTS)
 
     add_executable(kv_store_tests
         tests/unit/test_kv_store.cpp
+        tests/unit/test_cli.cpp
+        tests/unit/test_kv_store_concurrency.cpp
         tests/unit/test_snapshot.cpp
         tests/unit/test_wal.cpp
         tests/integration/test_recovery.cpp
@@ -74,6 +108,7 @@ if(CONCURRENT_KV_STORE_BUILD_TESTS)
     gtest_discover_tests(kv_store_tests)
 
     add_executable(kv_store_stress_tests
+        tests/stress/test_concurrency.cpp
         tests/stress/test_stress.cpp
         tests/helpers/file_utils.cpp
         tests/helpers/temp_dir.cpp

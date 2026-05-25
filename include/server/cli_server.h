@@ -47,6 +47,13 @@ class CliServer {
    */
   void PrintHelp(std::ostream& output) const;
 
+  /**
+   * @brief Prints version, entry count, and the current concurrency contract.
+   *
+   * @param output Stream used for status text.
+   */
+  void PrintInfo(std::ostream& output) const;
+
   /** @brief Parser dependency used to decode user input. */
   parser::CliParser& parser_;
   /** @brief Store dependency used to service parsed commands. */

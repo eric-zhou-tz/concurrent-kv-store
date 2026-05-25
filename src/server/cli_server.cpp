@@ -1,5 +1,7 @@
 #include "server/cli_server.h"
 
+#include "common/version.h"
+
 #include <exception>
 #include <iostream>
 #include <string>
@@ -66,6 +68,9 @@ void CliServer::Execute(const parser::Command& command, std::ostream& output, bo
           output << "ERR snapshot persistence is not configured\n";
         }
         break;
+      case parser::CommandType::kInfo:
+        PrintInfo(output);
+        break;
       case parser::CommandType::kHelp:
         PrintHelp(output);
         break;
@@ -87,14 +92,25 @@ void CliServer::Execute(const parser::Command& command, std::ostream& output, bo
 }
 
 void CliServer::PrintHelp(std::ostream& output) const {
+  output << "Concurrent KV Store v" << common::kProjectVersion << '\n';
   output << "Commands:\n";
   output << "  SET <key> <value>\n";
   output << "  GET <key>\n";
   output << "  DEL|DELETE <key>\n";
   output << "  COMPACT|SNAPSHOT\n";
   output << "  CLEAR PERSISTENCE\n";
+  output << "  INFO|VERSION|STATUS\n";
   output << "  HELP\n";
   output << "  EXIT\n";
+  output << "Concurrency: " << common::kConcurrencyModel << '\n';
+}
+
+void CliServer::PrintInfo(std::ostream& output) const {
+  output << "Concurrent KV Store v" << common::kProjectVersion << '\n';
+  output << "entries: " << store_.Size() << '\n';
+  output << "concurrency: " << common::kConcurrencyModel << '\n';
+  output << "durability: WAL appends are serialized before memory mutation; "
+            "snapshot, compaction, and recovery are exclusive\n";
 }
 
 }  // namespace server

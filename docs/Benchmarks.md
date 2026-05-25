@@ -47,6 +47,23 @@ The suite separates in-memory storage cost from durability and recovery cost.
 Hot-path rows exercise `KVStore` directly. Durability rows include WAL or
 snapshot filesystem work by design.
 
+Phase 0.5 adds a coarse reader/writer lock to the hot path. The published EC2
+tables below have not been refreshed for that change, and no official
+contention benchmark rows are published yet. Treat the current numbers as the
+last pre-concurrency baseline until a clean EC2 rerun records the new commit,
+compiler flags, CTest pass count, and benchmark output.
+
+Current implementation status:
+
+| Area | Status |
+| --- | --- |
+| Project version | `v0.5.0` |
+| Store synchronization | One `std::shared_mutex` per `KVStore` |
+| Read path | `Get`, `Contains`, and `Size` share the reader lock |
+| Write/durability path | `Set`, `Delete`, snapshots, compaction, clear, persistence reset, snapshot load, and WAL replay are exclusive |
+| CLI | `INFO`/`VERSION`/`STATUS` expose version, entry count, concurrency model, and durability notes |
+| Published EC2 numbers | Pre-concurrency baseline; not updated in this phase |
+
 ## Benchmark Methodology
 
 Publication runs use the EC2 script:
@@ -162,7 +179,27 @@ baseline.
 
 Future public-boundary benchmarks should be reported separately from direct
 `KVStore` rows so parser/formatting cost does not get blended into hot-path
-storage metrics.
+storage metrics. Phase 0.5 adds user-facing CLI status output, so a future CLI
+benchmark should include both regular command dispatch and the `INFO`/`HELP`
+surface if publication needs full REPL overhead.
+
+## Concurrency Benchmarks
+
+No official read/write contention benchmark has been published yet. The current
+implementation uses one `std::shared_mutex`: multiple readers can run
+concurrently, while writers and durability operations are serialized. Future
+benchmark rows should make that model explicit, for example read-only
+multi-threaded `Get` throughput and mixed read/write throughput under
+contention. Those rows should be labeled as measurements of the coarse
+reader/writer-lock design, not sharded storage.
+
+Suggested future rows:
+
+| Benchmark | Purpose |
+| --- | --- |
+| `BM_ConcurrentReadOnly` | Measure many-reader `Get` throughput against a preloaded store |
+| `BM_ConcurrentMixedReadWrite90_10` | Measure coarse-lock behavior with mostly reads and serialized writes |
+| `BM_ConcurrentMixedReadWrite70_30` | Measure heavier write contention before sharding work begins |
 
 ## Caveats
 
@@ -182,6 +219,8 @@ storage metrics.
 - The recorded Git metadata showed a dirty working tree. The dirty benchmark
   workflow/source changes were later committed as `d7adcb4`; rerun from a clean
   commit if strict release provenance is required.
+- Current published benchmark tables do not include Phase 0.5 concurrency
+  overhead or contention behavior.
 
 ## Reproducibility
 

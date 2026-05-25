@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 
@@ -20,6 +21,18 @@ namespace store {
 
 /**
  * @brief In-memory key-value store backed by an unordered map.
+ *
+ * KVStore is thread-safe for concurrent reads and exclusive mutations.
+ * `Get()`, `Contains()`, and `Size()` may proceed concurrently. `Set()`,
+ * `Delete()`, `Clear()`, snapshot operations, compaction, persistence reset,
+ * and recovery are serialized with an exclusive lock.
+ *
+ * Write operations are serialized through KVStore, including WAL appends.
+ * WAL and Snapshot objects are protected only when accessed through a single
+ * KVStore instance. Direct concurrent use of the same WriteAheadLog or Snapshot
+ * object outside KVStore, or through multiple KVStore instances, is
+ * unsupported. Recovery methods are internally exclusive, but should still be
+ * called during startup before serving live traffic.
  */
 class KVStore {
  public:
@@ -35,6 +48,11 @@ class KVStore {
    */
   explicit KVStore(persistence::WriteAheadLog* wal,
                    persistence::Snapshot* snapshot = nullptr);
+
+  KVStore(const KVStore& other);
+  KVStore& operator=(const KVStore& other);
+  KVStore(KVStore&& other);
+  KVStore& operator=(KVStore&& other);
 
   /**
    * @brief Inserts or updates a value for a key.
@@ -132,6 +150,10 @@ class KVStore {
                             std::uint64_t offset = 0);
 
  private:
+  /**
+   * @brief Reader/writer lock protecting the live map and persistence handles.
+   */
+  mutable std::shared_mutex mutex_;
   /** @brief Internal storage for key-value pairs. */
   std::unordered_map<std::string, std::string> data_;
   /** @brief Optional WAL used to persist future mutations. */
@@ -142,8 +164,16 @@ class KVStore {
   std::size_t writes_since_snapshot_ = 0;
 
   static constexpr std::size_t kSnapshotInterval = 1000;
-  /** @brief Saves a snapshot when enough writes have happened. */
-  void MaybeSnapshot();
+  /** @brief Saves a compacted snapshot when enough writes have happened. */
+  void MaybeSnapshotLocked();
+  /** @brief Writes a verified snapshot. Caller must hold mutex_ exclusively. */
+  bool SaveSnapshotLocked();
+  /**
+   * @brief Writes a verified compacted snapshot and rotates WAL.
+   *
+   * Caller must hold mutex_ exclusively.
+   */
+  bool CompactPersistenceLocked();
 };
 
 }  // namespace store
