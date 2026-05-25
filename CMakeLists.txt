@@ -1,0 +1,111 @@
+cmake_minimum_required(VERSION 3.20)
+
+project(
+    concurrent_kv_store
+    VERSION 0.3.0
+    DESCRIPTION "Modern C++ key-value store with WAL persistence and snapshot recovery"
+    LANGUAGES CXX
+)
+
+include(FetchContent)
+
+option(CONCURRENT_KV_STORE_BUILD_TESTS "Build GoogleTest suites" ON)
+option(CONCURRENT_KV_STORE_BUILD_BENCHMARKS "Build Google Benchmark suites" ON)
+
+add_library(kv_store_core
+    src/common/string_utils.cpp
+    src/parser/cli_parser.cpp
+    src/persistence/snapshot.cpp
+    src/persistence/wal.cpp
+    src/server/cli_server.cpp
+    src/store/kv_store.cpp
+)
+
+target_compile_features(kv_store_core PUBLIC cxx_std_20)
+
+target_include_directories(kv_store_core
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+)
+
+set_target_properties(kv_store_core PROPERTIES
+    CXX_EXTENSIONS OFF
+)
+
+if(MSVC)
+    target_compile_options(kv_store_core PRIVATE /W4)
+else()
+    target_compile_options(kv_store_core PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(kv_store src/main.cpp)
+target_link_libraries(kv_store PRIVATE kv_store_core)
+target_compile_features(kv_store PRIVATE cxx_std_20)
+set_target_properties(kv_store PROPERTIES CXX_EXTENSIONS OFF)
+
+if(CONCURRENT_KV_STORE_BUILD_TESTS)
+    enable_testing()
+
+    FetchContent_Declare(
+        googletest
+        URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+
+    add_executable(kv_store_tests
+        tests/unit/test_kv_store.cpp
+        tests/unit/test_snapshot.cpp
+        tests/unit/test_wal.cpp
+        tests/integration/test_recovery.cpp
+        tests/helpers/file_utils.cpp
+        tests/helpers/temp_dir.cpp
+    )
+
+    target_include_directories(kv_store_tests
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/tests
+    )
+    target_link_libraries(kv_store_tests PRIVATE kv_store_core GTest::gtest_main)
+
+    include(GoogleTest)
+    gtest_discover_tests(kv_store_tests)
+
+    add_executable(kv_store_stress_tests
+        tests/stress/test_stress.cpp
+        tests/helpers/file_utils.cpp
+        tests/helpers/temp_dir.cpp
+    )
+
+    target_include_directories(kv_store_stress_tests
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/tests
+    )
+    target_link_libraries(kv_store_stress_tests PRIVATE kv_store_core GTest::gtest_main)
+    gtest_discover_tests(kv_store_stress_tests)
+endif()
+
+if(CONCURRENT_KV_STORE_BUILD_BENCHMARKS)
+    FetchContent_Declare(
+        googlebenchmark
+        URL https://github.com/google/benchmark/archive/refs/tags/v1.8.3.zip
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googlebenchmark)
+
+    add_executable(kv_store_benchmark
+        benchmarks/core_hot_path/kv_store_benchmark.cpp
+    )
+
+    target_link_libraries(kv_store_benchmark
+        PRIVATE
+            kv_store_core
+            benchmark::benchmark_main
+    )
+endif()
