@@ -15,6 +15,11 @@
 
 build/
 bin/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+_deps/
 *.o
 *.out
 *.exe
@@ -62,14 +67,6 @@ vgcore.*
 
 # =========================
 
-# Tests (optional — exclude if not needed in image)
-
-# =========================
-
-tests/
-
-# =========================
-
 # Temp files
 
 # =========================
@@ -77,15 +74,6 @@ tests/
 tmp/
 temp/
 *.tmp
-
-# =========================
-
-# Docs (optional)
-
-# =========================
-
-README.md
-DESIGN.md
 
 # =========================
 

@@ -1,54 +1,77 @@
-# KV Store
+# Concurrent KV Store in Modern C++
 
-A small C++17 key-value store with an in-memory core, an interactive CLI,
-append-only write-ahead logging, snapshots, and startup recovery.
+A key-value store built from first principles in modern C++, with WAL
+persistence, snapshot recovery, benchmarking, and an eventual concurrent
+storage-engine architecture.
 
-## Features
+The current implementation is intentionally small and inspectable: a
+single-process CLI routes parsed commands into an in-memory `KVStore`, while
+the persistence layer records durable mutations and restores state from
+snapshots plus WAL tail replay.
 
-- `SET`, `GET`, and `DELETE` operations
-- Single-threaded in-memory storage built on `std::unordered_map`
-- Binary write-ahead log for durable mutations
-- Snapshot files with covered WAL offsets
-- Startup recovery from snapshot plus WAL tail
-- CLI interface for local use
-- GoogleTest unit, integration, and stress tests
-- Benchmark harness for write, read, mixed, recovery, and snapshot workloads
+## Table of Contents
+
+- [Architecture](#architecture)
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Repository Tour](#repository-tour)
+- [Benchmarks](#benchmarks)
+- [Engineering Notes](#engineering-notes)
 
 ## Architecture
 
 ```text
-CLI input
-   |
-   v
-CliParser
-   |
-   v
-CliServer
-   |
-   v
-KVStore
-   |
-   v
-WriteAheadLog + Snapshot
+Command text -> CliParser -> CliServer -> KVStore -> WAL + Snapshot
 ```
 
-The storage API stays small: the store owns in-memory state, while persistence
-components record mutations and provide recovery data. Mutating commands append
-to the WAL before updating memory.
+`KVStore` owns the live map and exposes the core `Set`, `Get`, and `Delete`
+API. `WriteAheadLog` stores ordered mutation records before in-memory mutation.
+`Snapshot` stores full point-in-time materialized state and records the WAL byte
+offset covered by the checkpoint.
 
-## Build
+Additional docs:
+
+- [Architecture](docs/Architecture.md)
+- [Benchmarks](docs/Benchmarks.md)
+- [Benchmark History](docs/Benchmark_History.md)
+- [Changelog](docs/CHANGELOG.md)
+- [Roadmap](docs/Roadmap.md)
+
+## Features
+
+- Modern C++20 build through CMake
+- In-memory `SET`, `GET`, and `DELETE`
+- Overwrite and missing-key semantics
+- Binary append-only WAL
+- Full-state snapshot checkpoints
+- Startup recovery from snapshot plus WAL tail
+- Interactive CLI
+- GoogleTest coverage for storage and persistence behavior
+- Google Benchmark hot-path benchmarks
+
+## Quick Start
+
+### Prerequisites
+
+- CMake 3.20 or newer
+- C++20 compiler such as GCC, Clang, or Apple Clang
+- Network access during first configure so CMake can fetch GoogleTest and
+  Google Benchmark
+
+### Native Release Build
 
 ```bash
-make
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
 ```
 
 Run the CLI:
 
 ```bash
-./bin/kv_store
+./build/kv_store
 ```
 
-Example:
+Example session:
 
 ```text
 kv-store> SET language cpp
@@ -63,70 +86,66 @@ kv-store> EXIT
 Bye
 ```
 
-## CLI Commands
-
-- `SET <key> <value>`
-- `GET <key>`
-- `DEL <key>` or `DELETE <key>`
-- `CLEAR PERSISTENCE`
-- `HELP`
-- `EXIT` or `QUIT`
-
-## Persistence
-
-By default the application stores durability files in the current working
-directory:
-
-- `kv_store.wal`
-- `kv_store.snapshot`
-
-Recovery loads the snapshot first when one exists, then replays only WAL records
-written after the snapshot's covered byte offset. If no snapshot exists, recovery
-replays the WAL from the beginning.
-
-The WAL and snapshot readers bound record and field sizes so corrupted files do
-not trigger unbounded allocations. Partial trailing WAL records are treated as
-the result of an interrupted write and are ignored after earlier valid records
-are applied.
-
-## Tests
+### Tests
 
 ```bash
-make test
-make test_verbose
-make test_stress
+ctest --test-dir build --output-on-failure -C Release
 ```
 
-If GoogleTest is not installed, vendor it locally:
+Focused targets:
 
 ```bash
-./scripts/bootstrap_gtest.sh
+cmake --build build --target kv_store_tests
+./build/kv_store_tests
+
+cmake --build build --target kv_store_stress_tests
+./build/kv_store_stress_tests
+```
+
+### Benchmarks
+
+```bash
+cmake --build build --target kv_store_benchmark
+./build/kv_store_benchmark
+./build/kv_store_benchmark --benchmark_filter=BM_Get
+```
+
+See [docs/Benchmarks.md](docs/Benchmarks.md) for methodology and result
+templates.
+
+## Repository Tour
+
+```text
+include/        Public headers for store, persistence, parser, and CLI server
+src/            Implementation files
+tests/          GoogleTest unit, integration, and stress suites
+benchmarks/     Google Benchmark hot-path benchmarks
+docs/           Architecture, benchmark, and roadmap notes
+scripts/        CMake convenience scripts
 ```
 
 ## Benchmarks
 
-```bash
-make benchmark
-./benchmark
-./benchmark 100000
-```
+The benchmark suite currently covers:
 
-The baseline report lives in `benchmark.md`. Treat checked-in benchmark numbers
-as local reference data and rerun them on the target machine before publishing
-new results.
+| Benchmark | What It Measures |
+| --- | --- |
+| `BM_Put` | In-memory insert/overwrite path |
+| `BM_Get` | Successful in-memory lookup path |
+| `BM_Delete` | Delete path after deterministic preload |
+| `BM_MixedReadWrite70_30` | Deterministic 70% read / 30% write flow |
+| `BM_RecoveryFromSnapshotAndWalTail` | Snapshot load plus WAL tail replay |
 
-## Repository Layout
+Benchmark results are machine-specific. Record compiler, build type, CPU, OS,
+commit, and command line with every published run.
 
-```text
-include/store/        Public KV store interface
-include/persistence/  WAL and snapshot interfaces
-include/parser/       CLI command parser
-include/server/       CLI server interface
-src/store/            KV store implementation
-src/persistence/      Durable storage implementation
-src/parser/           CLI parser implementation
-src/server/           CLI loop and command dispatch
-tests/                GoogleTest suites
-bench/                Benchmark harness
-scripts/              Build and run helpers
-```
+## Engineering Notes
+
+- The storage core is deliberately single-threaded today. Concurrency will be
+  added after the single-writer persistence contract stays stable under tests.
+- WAL records are length-framed and bounded to avoid unbounded allocation while
+  recovering corrupted files.
+- Snapshots duplicate full state by design. Incremental checkpoints and
+  compaction are future storage-engine work.
+- The CLI is an integration boundary, not the storage API. Tests and benchmarks
+  exercise `KVStore` and persistence components directly where possible.
