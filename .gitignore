@@ -72,6 +72,8 @@ docker-compose.override.yml
 # =========================
 
 external/googletest/
+kv_store.snapshot
+kv_store.wal
 tmp/
 temp/
 *.tmp
