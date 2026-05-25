@@ -23,6 +23,10 @@ All notable changes to this project will be documented in this file.
   rows.
 - Ran the benchmark workflow on the EC2 `c7i-flex.large` host and kept raw
   artifacts outside git under `benchmark_results/`.
+- Published the first EC2 benchmark baseline in front-facing docs, including
+  README performance highlights, detailed benchmark methodology/results,
+  benchmark history, and caveats for the dirty-tree provenance and missing
+  CTest pass-count capture.
 
 ## v0.3.0 -> Modern CMake + C++20 Project Foundation
 

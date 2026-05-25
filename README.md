@@ -11,12 +11,35 @@ snapshots plus WAL tail replay.
 
 ## Table of Contents
 
+- [Performance Highlights](#performance-highlights)
 - [Architecture](#architecture)
 - [Features](#features)
 - [Quick Start](#quick-start)
 - [Repository Tour](#repository-tour)
 - [Benchmarks](#benchmarks)
 - [Engineering Notes](#engineering-notes)
+
+## Performance Highlights
+
+Latest focused EC2 Release run: AWS `c7i-flex.large`, Ubuntu Linux, Intel Xeon
+Platinum 8488C, GCC/G++ 15.2.0, CMake Release with `-O3 -DNDEBUG`, five Google
+Benchmark repetitions. This KV-store run was not CPU-pinned, and the numbers
+below should not be compared directly to matching-engine results because the
+workloads are different.
+
+| Workload | What It Measures | Count / Size | Throughput / Latency |
+| --- | --- | ---: | ---: |
+| Mixed 70/30 read-write | Direct in-memory `KVStore` flow | 1,000-key working set | `55.09M ops/sec` |
+| Get | Successful in-memory lookup after preload | 1,000-key preload | `48.05M ops/sec`, `20.8 ns/op` |
+| Delete | In-memory erase after deterministic preload | 1,000 deletes/batch | `29.66M ops/sec` |
+| Set | In-memory insert/overwrite | 1,000 writes/batch | `17.11M ops/sec` |
+| Durable Set | WAL-backed `Set` with flush behavior | 1,000 writes/batch | `1.66M ops/sec` |
+| WAL replay | Checksum-framed WAL recovery path | 10,000 records | `3.75 ms`, `2.67M records/sec` |
+| Snapshot load | Full snapshot restore into memory | 10,000 entries | `1.21 ms`, `8.28M entries/sec` |
+| Snapshot + WAL-tail recovery | Snapshot-assisted recovery path | 10,000 base entries + 10% tail | `1.72 ms`, `6.38M entries/sec` |
+
+See [docs/Benchmarks.md](docs/Benchmarks.md) for methodology, caveats, raw
+artifact paths, and benchmark history.
 
 ## Architecture
 
@@ -112,7 +135,7 @@ cmake --build build --target kv_store_benchmark
 ```
 
 See [docs/Benchmarks.md](docs/Benchmarks.md) for methodology and result
-templates.
+tables.
 
 ### Benchmarking on EC2
 
@@ -162,8 +185,10 @@ The benchmark suite currently covers:
 | `BM_RecoveryFromCompactedSnapshotAndWalTail` | Snapshot plus rotated WAL recovery |
 | `BM_SnapshotCompaction` | Snapshot verification and WAL rotation |
 
-Benchmark results are machine-specific. Record compiler, build type, CPU, OS,
-commit, and command line with every published run.
+Latest EC2 results, methodology, caveats, and raw artifact paths are documented
+in [docs/Benchmarks.md](docs/Benchmarks.md). Benchmark results are
+machine-specific; record compiler, build type, CPU, OS, commit, and command line
+with every published run.
 
 ## Engineering Notes
 

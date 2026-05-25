@@ -163,6 +163,27 @@ directly.
 `K` is key size, `V` is value size, and `N` is stored entry or WAL record count,
 depending on the operation.
 
+## Benchmarking Model
+
+Benchmarks are grouped by architecture boundary:
+
+- In-memory hot-path benchmarks measure `KVStore` directly, without CLI or
+  persistence overhead.
+- Durability-path benchmarks measure WAL-backed writes and checksum-verified
+  WAL replay.
+- Snapshot-path benchmarks measure snapshot save/load, snapshot-assisted
+  recovery, and compaction through WAL rotation.
+- CLI/public-boundary benchmarks are not yet recorded and should remain
+  separate when added so parser and formatting costs are visible.
+
+Snapshot compaction is benchmarked as a recovery-shaping feature: it does not
+make individual `Get` or `Set` operations faster, but it limits long-term
+recovery work by replacing unbounded WAL replay with snapshot load plus a
+shorter current WAL tail.
+
+See [Benchmarks](Benchmarks.md) for the current EC2 Release baseline,
+methodology, and caveats.
+
 ## Tradeoffs
 
 | Choice | Tradeoff |
