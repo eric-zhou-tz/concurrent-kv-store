@@ -11,22 +11,38 @@
 
 namespace {
 
+using kv::persistence::WalReplayStatus;
 using kv::persistence::WriteAheadLog;
 using kv::tests::AppendBinaryFile;
 using kv::tests::AppendPrimitive;
 using kv::tests::FileExists;
 using kv::tests::FileSize;
+using kv::tests::ReadBinaryFile;
 using kv::tests::RemoveIfExists;
 using kv::tests::TempDir;
+using kv::tests::WriteBinaryFile;
 
 constexpr std::uint8_t kSetOp = 1;
 constexpr std::uint8_t kDeleteOp = 2;
 constexpr std::size_t kMaxWalRecordLength = 64U * 1024U * 1024U;
 
+std::uint32_t Crc32(const std::string& bytes) {
+  std::uint32_t crc = 0xFFFFFFFFU;
+  for (const unsigned char byte : bytes) {
+    crc ^= byte;
+    for (int bit = 0; bit < 8; ++bit) {
+      const std::uint32_t mask = 0U - (crc & 1U);
+      crc = (crc >> 1U) ^ (0xEDB88320U & mask);
+    }
+  }
+  return ~crc;
+}
+
 std::string FrameRecord(const std::string& payload) {
   std::string bytes;
   AppendPrimitive<std::uint32_t>(bytes,
                                  static_cast<std::uint32_t>(payload.size()));
+  AppendPrimitive<std::uint32_t>(bytes, Crc32(payload));
   bytes.append(payload);
   return bytes;
 }
@@ -50,12 +66,17 @@ std::string DeletePayload(const std::string& key) {
   return payload;
 }
 
-std::string UnknownPayload(const std::string& key) {
+std::string BadOpcodePayload() {
   std::string payload;
   AppendPrimitive<std::uint8_t>(payload, static_cast<std::uint8_t>(99));
-  AppendPrimitive<std::uint32_t>(payload, static_cast<std::uint32_t>(key.size()));
-  payload.append(key);
+  AppendPrimitive<std::uint32_t>(payload, 0U);
   return payload;
+}
+
+std::string CorruptPayloadByte(std::string frame) {
+  constexpr std::size_t kPayloadStart = sizeof(std::uint32_t) * 2;
+  frame.at(kPayloadStart) ^= 0x01;
+  return frame;
 }
 
 class WalTest : public ::testing::Test {
@@ -191,6 +212,24 @@ TEST_F(WalTest, LargeRecordReplay) {
   EXPECT_EQ(large_value, recovered.at("large"));
 }
 
+TEST_F(WalTest, ValidWalReplayReportsCleanEofAndVerifiesChecksum) {
+  {
+    WriteAheadLog wal(wal_path_);
+    wal.AppendSet("alpha", "1");
+    wal.AppendDelete("missing");
+  }
+
+  WriteAheadLog wal(wal_path_);
+  std::unordered_map<std::string, std::string> recovered;
+  const auto result = wal.ReplayDetailed(recovered);
+
+  EXPECT_EQ(WalReplayStatus::CleanEof, result.status);
+  EXPECT_EQ(2U, result.applied_operations);
+  EXPECT_EQ(FileSize(wal_path_), result.last_good_offset);
+  ASSERT_EQ(1U, recovered.size());
+  EXPECT_EQ("1", recovered.at("alpha"));
+}
+
 TEST_F(WalTest, ReplayFromOffsetStartsAtRecordBoundary) {
   std::uint64_t offset = 0;
   {
@@ -209,66 +248,26 @@ TEST_F(WalTest, ReplayFromOffsetStartsAtRecordBoundary) {
   EXPECT_EQ(recovered.end(), recovered.find("old"));
 }
 
-TEST_F(WalTest, UnknownOpcodeIsSkippedAndReplayContinues) {
+TEST_F(WalTest, BadOpcodeStopsReplayAndDoesNotApplyRecord) {
   {
     WriteAheadLog wal(wal_path_);
     wal.AppendSet("before", "1");
   }
-  AppendBinaryFile(wal_path_, FrameRecord(UnknownPayload("ignored")));
-  {
-    WriteAheadLog wal(wal_path_);
-    wal.AppendSet("after", "2");
-  }
+  AppendBinaryFile(wal_path_, FrameRecord(BadOpcodePayload()));
+  AppendBinaryFile(wal_path_, FrameRecord(SetPayload("after", "ignored")));
 
   WriteAheadLog wal(wal_path_);
   std::unordered_map<std::string, std::string> recovered;
+  const auto result = wal.ReplayDetailed(recovered);
 
-  EXPECT_EQ(2U, wal.Replay(recovered));
-  EXPECT_EQ("1", recovered.at("before"));
-  EXPECT_EQ("2", recovered.at("after"));
-  EXPECT_EQ(recovered.end(), recovered.find("ignored"));
-}
-
-TEST_F(WalTest, SetRecordWithExtraTrailingBytesIsSkipped) {
-  {
-    WriteAheadLog wal(wal_path_);
-    wal.AppendSet("before", "1");
-  }
-
-  std::string malformed = SetPayload("bad", "value");
-  malformed.push_back('x');
-  AppendBinaryFile(wal_path_, FrameRecord(malformed));
-
-  {
-    WriteAheadLog wal(wal_path_);
-    wal.AppendSet("after", "2");
-  }
-
-  const auto recovered = Replay();
-
-  ASSERT_EQ(2U, recovered.size());
-  EXPECT_EQ("1", recovered.at("before"));
-  EXPECT_EQ("2", recovered.at("after"));
-  EXPECT_EQ(recovered.end(), recovered.find("bad"));
-}
-
-TEST_F(WalTest, DeleteRecordWithTrailingBytesIsSkipped) {
-  {
-    WriteAheadLog wal(wal_path_);
-    wal.AppendSet("victim", "value");
-  }
-
-  std::string malformed = DeletePayload("victim");
-  malformed.push_back('x');
-  AppendBinaryFile(wal_path_, FrameRecord(malformed));
-
-  const auto recovered = Replay();
-
+  EXPECT_EQ(WalReplayStatus::InvalidOpcode, result.status);
+  EXPECT_EQ(1U, result.applied_operations);
   ASSERT_EQ(1U, recovered.size());
-  EXPECT_EQ("value", recovered.at("victim"));
+  EXPECT_EQ("1", recovered.at("before"));
+  EXPECT_EQ(recovered.end(), recovered.find("after"));
 }
 
-TEST_F(WalTest, MalformedKeySizeDoesNotCorruptEarlierOrLaterRecords) {
+TEST_F(WalTest, PartialKeyPayloadStopsWithoutApplyingRecord) {
   {
     WriteAheadLog wal(wal_path_);
     wal.AppendSet("before", "1");
@@ -277,21 +276,20 @@ TEST_F(WalTest, MalformedKeySizeDoesNotCorruptEarlierOrLaterRecords) {
   std::string malformed;
   AppendPrimitive<std::uint8_t>(malformed, kSetOp);
   AppendPrimitive<std::uint32_t>(malformed, 100U);
+  malformed.append("short");
   AppendBinaryFile(wal_path_, FrameRecord(malformed));
 
-  {
-    WriteAheadLog wal(wal_path_);
-    wal.AppendSet("after", "2");
-  }
+  WriteAheadLog wal(wal_path_);
+  std::unordered_map<std::string, std::string> recovered;
+  const auto result = wal.ReplayDetailed(recovered);
 
-  const auto recovered = Replay();
-
-  ASSERT_EQ(2U, recovered.size());
+  EXPECT_EQ(WalReplayStatus::PartialPayload, result.status);
+  EXPECT_EQ(1U, result.applied_operations);
+  ASSERT_EQ(1U, recovered.size());
   EXPECT_EQ("1", recovered.at("before"));
-  EXPECT_EQ("2", recovered.at("after"));
 }
 
-TEST_F(WalTest, MalformedValueSizeDoesNotCorruptEarlierOrLaterRecords) {
+TEST_F(WalTest, PartialValuePayloadStopsWithoutApplyingRecord) {
   {
     WriteAheadLog wal(wal_path_);
     wal.AppendSet("before", "1");
@@ -302,22 +300,40 @@ TEST_F(WalTest, MalformedValueSizeDoesNotCorruptEarlierOrLaterRecords) {
   AppendPrimitive<std::uint32_t>(malformed, 3U);
   malformed.append("bad");
   AppendPrimitive<std::uint32_t>(malformed, 100U);
+  malformed.append("short");
   AppendBinaryFile(wal_path_, FrameRecord(malformed));
 
-  {
-    WriteAheadLog wal(wal_path_);
-    wal.AppendSet("after", "2");
-  }
+  WriteAheadLog wal(wal_path_);
+  std::unordered_map<std::string, std::string> recovered;
+  const auto result = wal.ReplayDetailed(recovered);
 
-  const auto recovered = Replay();
-
-  ASSERT_EQ(2U, recovered.size());
+  EXPECT_EQ(WalReplayStatus::PartialPayload, result.status);
+  EXPECT_EQ(1U, result.applied_operations);
+  ASSERT_EQ(1U, recovered.size());
   EXPECT_EQ("1", recovered.at("before"));
-  EXPECT_EQ("2", recovered.at("after"));
   EXPECT_EQ(recovered.end(), recovered.find("bad"));
 }
 
-TEST_F(WalTest, PartialTrailingLengthIsIgnoredSafely) {
+TEST_F(WalTest, ExtraTrailingPayloadBytesStopsWithoutApplyingRecord) {
+  {
+    WriteAheadLog wal(wal_path_);
+    wal.AppendSet("victim", "value");
+  }
+
+  std::string malformed = DeletePayload("victim");
+  malformed.push_back('x');
+  AppendBinaryFile(wal_path_, FrameRecord(malformed));
+
+  WriteAheadLog wal(wal_path_);
+  std::unordered_map<std::string, std::string> recovered;
+  const auto result = wal.ReplayDetailed(recovered);
+
+  EXPECT_EQ(WalReplayStatus::InvalidPayload, result.status);
+  ASSERT_EQ(1U, recovered.size());
+  EXPECT_EQ("value", recovered.at("victim"));
+}
+
+TEST_F(WalTest, PartialTrailingLengthIsReportedSafely) {
   {
     WriteAheadLog wal(wal_path_);
     wal.AppendSet("good", "value");
@@ -328,29 +344,34 @@ TEST_F(WalTest, PartialTrailingLengthIsIgnoredSafely) {
   partial_length.resize(2);
   AppendBinaryFile(wal_path_, partial_length);
 
-  const auto recovered = Replay();
+  WriteAheadLog wal(wal_path_);
+  std::unordered_map<std::string, std::string> recovered;
+  const auto result = wal.ReplayDetailed(recovered);
 
+  EXPECT_EQ(WalReplayStatus::PartialRecord, result.status);
   ASSERT_EQ(1U, recovered.size());
   EXPECT_EQ("value", recovered.at("good"));
 }
 
-TEST_F(WalTest, TruncatedTrailingPayloadStopsAfterValidRecords) {
+TEST_F(WalTest, TornWriteInMiddleOfRecordStopsAfterValidRecords) {
   {
     WriteAheadLog wal(wal_path_);
     wal.AppendSet("good", "value");
   }
 
-  std::string torn_record;
-  AppendPrimitive<std::uint32_t>(torn_record, 32U);
-  AppendPrimitive<std::uint8_t>(torn_record, kSetOp);
+  std::string torn_record = FrameRecord(SetPayload("torn", "ignored"));
+  torn_record.resize(torn_record.size() - 3);
   AppendBinaryFile(wal_path_, torn_record);
 
   WriteAheadLog wal(wal_path_);
   std::unordered_map<std::string, std::string> recovered;
+  const auto result = wal.ReplayDetailed(recovered);
 
-  EXPECT_EQ(1U, wal.Replay(recovered));
+  EXPECT_EQ(WalReplayStatus::PartialRecord, result.status);
+  EXPECT_EQ(1U, result.applied_operations);
   ASSERT_EQ(1U, recovered.size());
   EXPECT_EQ("value", recovered.at("good"));
+  EXPECT_EQ(recovered.end(), recovered.find("torn"));
 }
 
 TEST_F(WalTest, ImpossibleRecordLengthStopsWithoutAllocatingPayload) {
@@ -365,11 +386,78 @@ TEST_F(WalTest, ImpossibleRecordLengthStopsWithoutAllocatingPayload) {
   AppendBinaryFile(wal_path_, impossible_record);
   AppendBinaryFile(wal_path_, FrameRecord(SetPayload("after", "ignored")));
 
-  const auto recovered = Replay();
+  WriteAheadLog wal(wal_path_);
+  std::unordered_map<std::string, std::string> recovered;
+  const auto result = wal.ReplayDetailed(recovered);
 
+  EXPECT_EQ(WalReplayStatus::InvalidLength, result.status);
   ASSERT_EQ(1U, recovered.size());
   EXPECT_EQ("value", recovered.at("good"));
   EXPECT_EQ(recovered.end(), recovered.find("after"));
+}
+
+TEST_F(WalTest, ChecksumMismatchStopsAndDoesNotApplyCorruptedRecord) {
+  {
+    WriteAheadLog wal(wal_path_);
+    wal.AppendSet("before", "1");
+  }
+  AppendBinaryFile(
+      wal_path_, CorruptPayloadByte(FrameRecord(SetPayload("bad", "value"))));
+
+  WriteAheadLog wal(wal_path_);
+  std::unordered_map<std::string, std::string> recovered;
+  const auto result = wal.ReplayDetailed(recovered);
+
+  EXPECT_EQ(WalReplayStatus::ChecksumMismatch, result.status);
+  EXPECT_EQ(1U, result.applied_operations);
+  ASSERT_EQ(1U, recovered.size());
+  EXPECT_EQ("1", recovered.at("before"));
+  EXPECT_EQ(recovered.end(), recovered.find("bad"));
+}
+
+TEST_F(WalTest, SafeTruncateAfterCorruptedTailKeepsOnlyValidatedPrefix) {
+  std::uint64_t good_offset = 0;
+  {
+    WriteAheadLog wal(wal_path_);
+    wal.AppendSet("good", "value");
+    good_offset = wal.CurrentOffset();
+  }
+  AppendBinaryFile(
+      wal_path_, CorruptPayloadByte(FrameRecord(SetPayload("bad", "value"))));
+  ASSERT_GT(FileSize(wal_path_), good_offset);
+
+  WriteAheadLog wal(wal_path_);
+  std::unordered_map<std::string, std::string> recovered;
+  const auto result = wal.ReplayFromAndTruncate(0, recovered);
+
+  EXPECT_EQ(WalReplayStatus::ChecksumMismatch, result.status);
+  EXPECT_TRUE(result.truncated);
+  EXPECT_EQ(good_offset, result.last_good_offset);
+  EXPECT_EQ(good_offset, FileSize(wal_path_));
+  ASSERT_EQ(1U, recovered.size());
+  EXPECT_EQ("value", recovered.at("good"));
+}
+
+TEST_F(WalTest, TruncatedWalCanAppendAndReplayNewRecords) {
+  {
+    WriteAheadLog wal(wal_path_);
+    wal.AppendSet("good", "value");
+  }
+  AppendBinaryFile(
+      wal_path_, CorruptPayloadByte(FrameRecord(SetPayload("bad", "x"))));
+
+  {
+    WriteAheadLog wal(wal_path_);
+    std::unordered_map<std::string, std::string> recovered;
+    ASSERT_TRUE(wal.ReplayFromAndTruncate(0, recovered).truncated);
+    wal.AppendSet("after", "2");
+  }
+
+  const auto recovered = Replay();
+
+  ASSERT_EQ(2U, recovered.size());
+  EXPECT_EQ("value", recovered.at("good"));
+  EXPECT_EQ("2", recovered.at("after"));
 }
 
 TEST_F(WalTest, OffsetPastEndReplaysNoRecords) {
@@ -380,9 +468,21 @@ TEST_F(WalTest, OffsetPastEndReplaysNoRecords) {
 
   WriteAheadLog wal(wal_path_);
   std::unordered_map<std::string, std::string> recovered;
+  const auto result = wal.ReplayFromDetailed(1000000, recovered);
 
-  EXPECT_EQ(0U, wal.ReplayFrom(1000000, recovered));
+  EXPECT_EQ(WalReplayStatus::CleanEof, result.status);
+  EXPECT_EQ(0U, result.applied_operations);
   EXPECT_TRUE(recovered.empty());
+}
+
+TEST_F(WalTest, ManuallyWrittenChecksumFrameReplays) {
+  WriteBinaryFile(wal_path_, FrameRecord(SetPayload("manual", "ok")));
+
+  const auto recovered = Replay();
+
+  ASSERT_EQ(1U, recovered.size());
+  EXPECT_EQ("ok", recovered.at("manual"));
+  EXPECT_FALSE(ReadBinaryFile(wal_path_).empty());
 }
 
 }  // namespace

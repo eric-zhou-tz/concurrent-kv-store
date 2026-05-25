@@ -18,6 +18,7 @@ using kv::persistence::Snapshot;
 using kv::persistence::SnapshotLoadResult;
 using kv::persistence::WriteAheadLog;
 using kv::store::KVStore;
+using kv::tests::AppendBinaryFile;
 using kv::tests::AppendPrimitive;
 using kv::tests::FileExists;
 using kv::tests::TempDir;
@@ -25,6 +26,45 @@ using kv::tests::WriteBinaryFile;
 
 constexpr std::uint32_t kSnapshotMagic = 0x3153564BU;
 constexpr std::uint32_t kSnapshotVersion = 1;
+constexpr std::uint8_t kSetOp = 1;
+
+std::uint32_t Crc32(const std::string& bytes) {
+  std::uint32_t crc = 0xFFFFFFFFU;
+  for (const unsigned char byte : bytes) {
+    crc ^= byte;
+    for (int bit = 0; bit < 8; ++bit) {
+      const std::uint32_t mask = 0U - (crc & 1U);
+      crc = (crc >> 1U) ^ (0xEDB88320U & mask);
+    }
+  }
+  return ~crc;
+}
+
+std::string FrameRecord(const std::string& payload) {
+  std::string bytes;
+  AppendPrimitive<std::uint32_t>(bytes,
+                                 static_cast<std::uint32_t>(payload.size()));
+  AppendPrimitive<std::uint32_t>(bytes, Crc32(payload));
+  bytes.append(payload);
+  return bytes;
+}
+
+std::string SetPayload(const std::string& key, const std::string& value) {
+  std::string payload;
+  AppendPrimitive<std::uint8_t>(payload, kSetOp);
+  AppendPrimitive<std::uint32_t>(payload, static_cast<std::uint32_t>(key.size()));
+  payload.append(key);
+  AppendPrimitive<std::uint32_t>(payload,
+                                 static_cast<std::uint32_t>(value.size()));
+  payload.append(value);
+  return payload;
+}
+
+std::string CorruptPayloadByte(std::string frame) {
+  constexpr std::size_t kPayloadStart = sizeof(std::uint32_t) * 2;
+  frame.at(kPayloadStart) ^= 0x01;
+  return frame;
+}
 
 class RecoveryTest : public ::testing::Test {
  protected:
@@ -148,6 +188,38 @@ TEST_F(RecoveryTest, SnapshotPlusWalTailRecoversFromCoveredOffset) {
   EXPECT_FALSE(recovered.Contains("old"));
   EXPECT_EQ("wal", recovered.Get("keep").value());
   EXPECT_EQ("wal", recovered.Get("new").value());
+}
+
+TEST_F(RecoveryTest, SnapshotPlusWalTailStopsAtCorruptedChecksumTail) {
+  std::uint64_t snapshot_offset = 0;
+  {
+    WriteAheadLog wal(wal_path_);
+    wal.AppendSet("covered", "skip");
+    snapshot_offset = wal.CurrentOffset();
+
+    Snapshot snapshot(snapshot_path_);
+    snapshot.Save({{"base", "snapshot"}, {"covered", "snapshot"}},
+                  snapshot_offset);
+
+    wal.AppendSet("base", "wal");
+    wal.AppendSet("tail", "valid");
+  }
+  AppendBinaryFile(
+      wal_path_, CorruptPayloadByte(FrameRecord(SetPayload("bad", "ignored"))));
+
+  WriteAheadLog wal(wal_path_);
+  Snapshot snapshot(snapshot_path_);
+  KVStore recovered(&wal, &snapshot);
+  const SnapshotLoadResult snapshot_result = recovered.LoadSnapshot(snapshot);
+  const std::size_t wal_operations =
+      recovered.ReplayFromWal(wal, snapshot_result.wal_offset);
+
+  EXPECT_EQ(snapshot_offset, snapshot_result.wal_offset);
+  EXPECT_EQ(2U, wal_operations);
+  EXPECT_EQ("wal", recovered.Get("base").value());
+  EXPECT_EQ("snapshot", recovered.Get("covered").value());
+  EXPECT_EQ("valid", recovered.Get("tail").value());
+  EXPECT_FALSE(recovered.Contains("bad"));
 }
 
 TEST_F(RecoveryTest, WalTailAfterSnapshotOverridesSnapshotValues) {

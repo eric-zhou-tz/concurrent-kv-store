@@ -44,15 +44,47 @@ recoverable after a process crash.
 ### WriteAheadLog
 
 `WriteAheadLog` is an append-only binary log of `SET` and `DELETE` mutations.
-Each record is length-framed:
+WAL record format v2 is a breaking change from the original length-only
+framing; old WAL files must be discarded or migrated before replay.
+
+Each v2 record is:
 
 ```text
-[record_length][op][key_size][key][value_size][value]
-[record_length][op][key_size][key]
+[uint32 payload_length][uint32 crc32(payload)][payload bytes]
 ```
 
-`DELETE` records omit the value field. Replay applies valid records in order,
-skips malformed bounded records, and stops at incomplete trailing records.
+The checksum is a dependency-free CRC32 using polynomial `0xEDB88320`. It
+covers the payload bytes only, not the length prefix or checksum field.
+
+Payload layouts:
+
+```text
+SET:
+[uint8 op=1][uint32 key_size][key][uint32 value_size][value]
+
+DELETE:
+[uint8 op=2][uint32 key_size][key]
+```
+
+Replay reads one complete frame at a time, verifies the CRC32, parses the full
+payload, and only then applies the mutation. It tracks the byte offset after
+the last fully validated record as `last_good_offset`.
+
+Replay distinguishes these stop conditions internally:
+
+- `CleanEof`: normal end of file after a valid record boundary.
+- `PartialRecord`: torn length, checksum, or payload bytes at the file tail.
+- `InvalidLength`: zero-length or larger-than-allowed record length.
+- `InvalidOpcode`: unknown operation byte.
+- `ChecksumMismatch`: payload bytes do not match the stored CRC32.
+- `PartialPayload`: payload-internal key/value length claims bytes that are not
+  present in the payload.
+- `InvalidPayload`: payload has trailing bytes or another structural mismatch.
+
+On any non-EOF stop, replay keeps all records up to `last_good_offset` and does
+not apply the bad record. Recovery may call `ReplayFromAndTruncate()` to remove
+the untrusted suffix after `last_good_offset`; truncation happens only after
+replay has identified a validated record boundary.
 
 ### Snapshot
 
@@ -65,8 +97,9 @@ the committed snapshot. Each snapshot stores:
 - entry count
 - length-prefixed key/value entries
 
-Startup recovery loads the latest snapshot first, then replays WAL records after
-the covered byte offset.
+Startup recovery loads the latest snapshot first, then replays WAL records
+after the covered byte offset. With WAL v2, the post-snapshot tail is
+checksum-verified record by record before mutations are applied.
 
 ### CLI Boundary
 
@@ -98,6 +131,7 @@ depending on the operation.
 | Full snapshots | Easy recovery model, higher checkpoint write amplification. |
 | Single process / single writer | Clean invariants while persistence matures, no concurrent clients yet. |
 | Host-endian binary format | Simple early implementation, future portability work needed. |
+| CRC32 WAL records | Dependency-free corruption detection, not cryptographic integrity. |
 
 ## Future Direction
 

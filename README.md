@@ -42,9 +42,10 @@ Additional docs:
 - Modern C++20 build through CMake
 - In-memory `SET`, `GET`, and `DELETE`
 - Overwrite and missing-key semantics
-- Binary append-only WAL
+- Binary append-only WAL with CRC32 payload checksums
+- Corruption-aware WAL replay with safe truncation to the last valid record
 - Full-state snapshot checkpoints
-- Startup recovery from snapshot plus WAL tail
+- Startup recovery from snapshot plus checksum-verified WAL tail
 - Interactive CLI
 - GoogleTest coverage for storage and persistence behavior
 - Google Benchmark hot-path benchmarks
@@ -120,7 +121,7 @@ include/        Public headers for store, persistence, parser, and CLI server
 src/            Implementation files
 tests/          GoogleTest unit, integration, and stress suites
 benchmarks/     Google Benchmark hot-path benchmarks
-docs/           Architecture, benchmark, and roadmap notes
+docs/           Architecture, benchmark, changelog, and roadmap notes
 scripts/        CMake convenience scripts
 ```
 
@@ -143,8 +144,11 @@ commit, and command line with every published run.
 
 - The storage core is deliberately single-threaded today. Concurrency will be
   added after the single-writer persistence contract stays stable under tests.
-- WAL records are length-framed and bounded to avoid unbounded allocation while
-  recovering corrupted files.
+- WAL records are length-framed, checksum-protected, and bounded to avoid
+  unbounded allocation while recovering corrupted files.
+- WAL replay applies only complete checksum-verified records. It stops at the
+  first untrusted frame and can truncate a corrupted crash tail to the last
+  known-good byte offset.
 - Snapshots duplicate full state by design. Incremental checkpoints and
   compaction are future storage-engine work.
 - The CLI is an integration boundary, not the storage API. Tests and benchmarks

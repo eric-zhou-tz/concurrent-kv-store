@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## v0.3.0 -> Modern CMake + C++20 Project Foundation
 
+- Added WAL v2 records with CRC32 checksums over payload bytes. Replay now
+  applies only complete checksum-verified records and reports detailed stop
+  statuses for clean EOF, torn records, invalid lengths, bad opcodes, checksum
+  mismatches, partial payloads, and invalid payloads.
+- Added WAL truncation to the last known-good offset after corrupted crash-tail
+  replay, with deterministic tests for torn writes, oversized lengths, bad
+  opcodes, partial key/value payloads, checksum mismatch, safe truncate, and
+  snapshot-plus-WAL-tail recovery.
 - Renamed the active project identity to `concurrent-kv-store` and rewrote the README around the plain KV store purpose: modern C++, WAL persistence, snapshot recovery, benchmarking, and eventual concurrent storage-engine work.
 - Replaced the legacy Makefile build with a CMake 3.20 project using C++20, a reusable `kv_store_core` library, a `kv_store` CLI executable, discovered GoogleTest targets, and a Google Benchmark executable.
 - Added CMake `FetchContent` dependencies for GoogleTest `v1.14.0` and Google Benchmark `v1.8.3`, keeping external dependencies explicit and limited to test/benchmark tooling.

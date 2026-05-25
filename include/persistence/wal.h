@@ -10,8 +10,40 @@
 namespace kv {
 namespace persistence {
 
+enum class WalReplayStatus {
+  CleanEof,
+  PartialRecord,
+  InvalidLength,
+  InvalidOpcode,
+  ChecksumMismatch,
+  PartialPayload,
+  InvalidPayload,
+};
+
+struct WalReplayResult {
+  std::size_t applied_operations = 0;
+  WalReplayStatus status = WalReplayStatus::CleanEof;
+  std::uint64_t start_offset = 0;
+  std::uint64_t last_good_offset = 0;
+  std::uint64_t stop_offset = 0;
+  bool truncated = false;
+};
+
 /**
  * @brief Append-only write-ahead log for durable SET and DELETE operations.
+ *
+ * WAL format v2 is a breaking format change from the original length-only
+ * frame. Each record is:
+ *
+ *   [uint32 payload_length][uint32 crc32(payload)][payload bytes]
+ *
+ * The payload is one of:
+ *
+ *   SET:    [uint8 op=1][uint32 key_size][key][uint32 value_size][value]
+ *   DELETE: [uint8 op=2][uint32 key_size][key]
+ *
+ * The checksum covers only payload bytes. Replay validates the full frame and
+ * checksum before applying any mutation.
  */
 class WriteAheadLog {
  public:
@@ -55,15 +87,32 @@ class WriteAheadLog {
   void Clear();
 
   /**
+   * @brief Truncates the WAL to an already-validated record boundary.
+   *
+   * @param offset Byte offset to keep through.
+   * @throws std::runtime_error if truncation fails or offset is past EOF.
+   */
+  void TruncateTo(std::uint64_t offset);
+
+  /**
    * @brief Replays valid WAL records into an in-memory map.
    *
-   * Malformed bounded records are skipped. Replay stops at EOF, an incomplete
-   * trailing record, or an impossible record length.
+   * Replay stops at EOF or at the first malformed, corrupt, or incomplete
+   * record. The bad record is not applied.
    *
    * @param store Store map to update while replaying the log.
    * @return Number of valid operations applied.
    */
   std::size_t Replay(std::unordered_map<std::string, std::string>& store) const;
+
+  /**
+   * @brief Replays WAL records and returns detailed stop/recovery status.
+   *
+   * @param store Store map to update while replaying the log.
+   * @return Detailed replay result including last known-good offset.
+   */
+  WalReplayResult ReplayDetailed(
+      std::unordered_map<std::string, std::string>& store) const;
 
   /**
    * @brief Replays valid WAL records starting at a byte offset.
@@ -78,6 +127,35 @@ class WriteAheadLog {
   std::size_t ReplayFrom(
       std::uint64_t offset,
       std::unordered_map<std::string, std::string>& store) const;
+
+  /**
+   * @brief Replays WAL records from an offset and returns detailed status.
+   *
+   * Replay stops at the first malformed, corrupt, or incomplete record. Records
+   * after that point are not trusted because the validated prefix has ended.
+   *
+   * @param offset Byte offset to start replay from.
+   * @param store Store map to update while replaying the log.
+   * @return Detailed replay result including last known-good offset.
+   */
+  WalReplayResult ReplayFromDetailed(
+      std::uint64_t offset,
+      std::unordered_map<std::string, std::string>& store) const;
+
+  /**
+   * @brief Replays from an offset and truncates any corrupt tail.
+   *
+   * If replay stops before clean EOF, the WAL is truncated to the last
+   * validated record boundary. This should be used only during recovery when
+   * the suffix after the first bad frame is considered an untrusted crash tail.
+   *
+   * @param offset Byte offset to start replay from.
+   * @param store Store map to update while replaying the log.
+   * @return Detailed replay result, with truncated set when truncation happened.
+   */
+  WalReplayResult ReplayFromAndTruncate(
+      std::uint64_t offset,
+      std::unordered_map<std::string, std::string>& store);
 
  private:
   /** @brief Filesystem path of the WAL file. */
