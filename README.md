@@ -44,7 +44,7 @@ Additional docs:
 - Overwrite and missing-key semantics
 - Binary append-only WAL with CRC32 payload checksums
 - Corruption-aware WAL replay with safe truncation to the last valid record
-- Full-state snapshot checkpoints
+- Verified full-state snapshot checkpoints with WAL rotation compaction
 - Startup recovery from snapshot plus checksum-verified WAL tail
 - Interactive CLI
 - GoogleTest coverage for storage and persistence behavior
@@ -136,6 +136,8 @@ The benchmark suite currently covers:
 | `BM_Delete` | Delete path after deterministic preload |
 | `BM_MixedReadWrite70_30` | Deterministic 70% read / 30% write flow |
 | `BM_RecoveryFromSnapshotAndWalTail` | Snapshot load plus WAL tail replay |
+| `BM_RecoveryFromCompactedSnapshotAndWalTail` | Snapshot plus rotated WAL recovery |
+| `BM_SnapshotCompaction` | Snapshot verification and WAL rotation |
 
 Benchmark results are machine-specific. Record compiler, build type, CPU, OS,
 commit, and command line with every published run.
@@ -149,7 +151,10 @@ commit, and command line with every published run.
 - WAL replay applies only complete checksum-verified records. It stops at the
   first untrusted frame and can truncate a corrupted crash tail to the last
   known-good byte offset.
-- Snapshots duplicate full state by design. Incremental checkpoints and
-  compaction are future storage-engine work.
+- `COMPACT`/`SNAPSHOT` writes and verifies a full snapshot before rotating the
+  WAL to an empty log. If snapshot writing or verification fails, WAL history
+  remains untouched.
+- Snapshots duplicate full state by design. Incremental checkpoints are future
+  storage-engine work.
 - The CLI is an integration boundary, not the storage API. Tests and benchmarks
   exercise `KVStore` and persistence components directly where possible.

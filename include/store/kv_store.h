@@ -99,6 +99,17 @@ class KVStore {
   bool SaveSnapshot();
 
   /**
+   * @brief Saves a verified snapshot and rotates WAL history it covers.
+   *
+   * The snapshot is written with WAL offset zero because rotation starts a new
+   * empty WAL. If snapshot writing or verification fails, the WAL is left
+   * untouched and the exception is propagated to the caller.
+   *
+   * @return `true` when a snapshot was configured and compaction completed.
+   */
+  bool CompactPersistence();
+
+  /**
    * @brief Loads a persisted snapshot directly into this store.
    *
    * Snapshot recovery is separated from WAL replay so startup can restore the

@@ -21,6 +21,8 @@ using kv::store::KVStore;
 using kv::tests::AppendBinaryFile;
 using kv::tests::AppendPrimitive;
 using kv::tests::FileExists;
+using kv::tests::FileSize;
+using kv::tests::RemoveIfExists;
 using kv::tests::TempDir;
 using kv::tests::WriteBinaryFile;
 
@@ -76,6 +78,16 @@ class RecoveryTest : public ::testing::Test {
   std::string wal_path_;
   std::string snapshot_path_;
 };
+
+KVStore RecoverStore(const std::string& wal_path,
+                     const std::string& snapshot_path) {
+  WriteAheadLog wal(wal_path);
+  Snapshot snapshot(snapshot_path);
+  KVStore recovered;
+  const SnapshotLoadResult snapshot_result = recovered.LoadSnapshot(snapshot);
+  recovered.ReplayFromWal(wal, snapshot_result.wal_offset);
+  return recovered;
+}
 
 TEST_F(RecoveryTest, WritesThenReconstructsStoreFromWal) {
   {
@@ -330,6 +342,183 @@ TEST_F(RecoveryTest, ClearPersistenceKeepsMemoryButResetsDurableState) {
   ASSERT_EQ(1U, replayed.size());
   EXPECT_EQ("new", replayed.at("after-clear"));
   EXPECT_EQ(replayed.end(), replayed.find("before-clear"));
+}
+
+TEST_F(RecoveryTest, CompactPersistenceRotatesWalAndRecoversSnapshotOnly) {
+  {
+    WriteAheadLog wal(wal_path_);
+    Snapshot snapshot(snapshot_path_);
+    KVStore store(&wal, &snapshot);
+    store.Set("a", "1");
+    store.Set("b", "2");
+    ASSERT_GT(FileSize(wal_path_), 0U);
+
+    ASSERT_TRUE(store.CompactPersistence());
+
+    EXPECT_EQ(0U, FileSize(wal_path_));
+  }
+
+  const KVStore recovered = RecoverStore(wal_path_, snapshot_path_);
+
+  EXPECT_EQ(2U, recovered.Size());
+  EXPECT_EQ("1", recovered.Get("a").value());
+  EXPECT_EQ("2", recovered.Get("b").value());
+}
+
+TEST_F(RecoveryTest, CompactedSnapshotPlusNewWalTailRecoversAllKeys) {
+  {
+    WriteAheadLog wal(wal_path_);
+    Snapshot snapshot(snapshot_path_);
+    KVStore store(&wal, &snapshot);
+    store.Set("a", "1");
+    store.Set("b", "2");
+    ASSERT_TRUE(store.CompactPersistence());
+    store.Set("c", "3");
+  }
+
+  const KVStore recovered = RecoverStore(wal_path_, snapshot_path_);
+
+  EXPECT_EQ(3U, recovered.Size());
+  EXPECT_EQ("1", recovered.Get("a").value());
+  EXPECT_EQ("2", recovered.Get("b").value());
+  EXPECT_EQ("3", recovered.Get("c").value());
+}
+
+TEST_F(RecoveryTest, DeleteAfterCompactionRemovesSnapshotKeyOnRecovery) {
+  {
+    WriteAheadLog wal(wal_path_);
+    Snapshot snapshot(snapshot_path_);
+    KVStore store(&wal, &snapshot);
+    store.Set("a", "old");
+    ASSERT_TRUE(store.CompactPersistence());
+    EXPECT_TRUE(store.Delete("a"));
+  }
+
+  const KVStore recovered = RecoverStore(wal_path_, snapshot_path_);
+
+  EXPECT_EQ(0U, recovered.Size());
+  EXPECT_FALSE(recovered.Contains("a"));
+}
+
+TEST_F(RecoveryTest, OverwriteAfterCompactionWinsOnRecovery) {
+  {
+    WriteAheadLog wal(wal_path_);
+    Snapshot snapshot(snapshot_path_);
+    KVStore store(&wal, &snapshot);
+    store.Set("a", "old");
+    ASSERT_TRUE(store.CompactPersistence());
+    store.Set("a", "new");
+  }
+
+  const KVStore recovered = RecoverStore(wal_path_, snapshot_path_);
+
+  EXPECT_EQ(1U, recovered.Size());
+  EXPECT_EQ("new", recovered.Get("a").value());
+}
+
+TEST_F(RecoveryTest, FailedSnapshotWriteDoesNotRotateWal) {
+  const std::string missing_dir_snapshot =
+      temp_dir_.FilePath("missing-dir/store.snapshot");
+  std::uintmax_t wal_size_before = 0;
+  {
+    WriteAheadLog wal(wal_path_);
+    Snapshot snapshot(missing_dir_snapshot);
+    KVStore store(&wal, &snapshot);
+    store.Set("a", "1");
+    wal_size_before = FileSize(wal_path_);
+
+    EXPECT_THROW(store.CompactPersistence(), std::runtime_error);
+    EXPECT_EQ(wal_size_before, FileSize(wal_path_));
+  }
+
+  WriteAheadLog wal(wal_path_);
+  KVStore recovered(&wal);
+
+  EXPECT_EQ(1U, recovered.ReplayFromWal(wal));
+  EXPECT_EQ("1", recovered.Get("a").value());
+}
+
+TEST_F(RecoveryTest, CrashAfterSnapshotBeforeWalRotationStillRecovers) {
+  {
+    WriteAheadLog wal(wal_path_);
+    KVStore store(&wal);
+    store.Set("a", "old");
+    store.Set("a", "new");
+
+    Snapshot snapshot(snapshot_path_);
+    snapshot.SaveVerified({{"a", "new"}}, 0);
+  }
+
+  const KVStore recovered = RecoverStore(wal_path_, snapshot_path_);
+
+  EXPECT_EQ(1U, recovered.Size());
+  EXPECT_EQ("new", recovered.Get("a").value());
+  EXPECT_GT(FileSize(wal_path_), 0U);
+}
+
+TEST_F(RecoveryTest, MissingWalAfterValidCompactedSnapshotRecoversSnapshot) {
+  {
+    WriteAheadLog wal(wal_path_);
+    Snapshot snapshot(snapshot_path_);
+    KVStore store(&wal, &snapshot);
+    store.Set("a", "1");
+    ASSERT_TRUE(store.CompactPersistence());
+  }
+  RemoveIfExists(wal_path_);
+
+  const KVStore recovered = RecoverStore(wal_path_, snapshot_path_);
+
+  EXPECT_EQ(1U, recovered.Size());
+  EXPECT_EQ("1", recovered.Get("a").value());
+}
+
+TEST_F(RecoveryTest, CorruptedSnapshotDoesNotDestroyValidWalFallback) {
+  {
+    WriteAheadLog wal(wal_path_);
+    KVStore store(&wal);
+    store.Set("a", "1");
+    store.Set("b", "2");
+  }
+
+  std::string bytes;
+  AppendPrimitive<std::uint32_t>(bytes, kSnapshotMagic);
+  AppendPrimitive<std::uint32_t>(bytes, 999U);
+  WriteBinaryFile(snapshot_path_, bytes);
+  const std::uintmax_t wal_size_before = FileSize(wal_path_);
+
+  Snapshot snapshot(snapshot_path_);
+  KVStore recovered_with_snapshot;
+  EXPECT_THROW(recovered_with_snapshot.LoadSnapshot(snapshot),
+               std::runtime_error);
+  EXPECT_EQ(wal_size_before, FileSize(wal_path_));
+
+  WriteAheadLog wal(wal_path_);
+  KVStore recovered_from_wal(&wal);
+  EXPECT_EQ(2U, recovered_from_wal.ReplayFromWal(wal));
+  EXPECT_EQ("1", recovered_from_wal.Get("a").value());
+  EXPECT_EQ("2", recovered_from_wal.Get("b").value());
+}
+
+TEST_F(RecoveryTest, RepeatedCompactionIsIdempotentAndKeepsLatestState) {
+  {
+    WriteAheadLog wal(wal_path_);
+    Snapshot snapshot(snapshot_path_);
+    KVStore store(&wal, &snapshot);
+    store.Set("a", "1");
+    ASSERT_TRUE(store.CompactPersistence());
+    ASSERT_TRUE(store.CompactPersistence());
+    store.Set("a", "2");
+    store.Set("b", "3");
+    ASSERT_TRUE(store.CompactPersistence());
+    store.Set("c", "4");
+  }
+
+  const KVStore recovered = RecoverStore(wal_path_, snapshot_path_);
+
+  EXPECT_EQ(3U, recovered.Size());
+  EXPECT_EQ("2", recovered.Get("a").value());
+  EXPECT_EQ("3", recovered.Get("b").value());
+  EXPECT_EQ("4", recovered.Get("c").value());
 }
 
 TEST_F(RecoveryTest, RepeatedOpenCloseCyclesAppendAndReplayAllRecords) {

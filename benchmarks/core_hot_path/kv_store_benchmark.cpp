@@ -191,10 +191,76 @@ void BM_RecoveryFromSnapshotAndWalTail(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations() * (base_count + tail_count));
 }
 
+void BM_RecoveryFromCompactedSnapshotAndWalTail(benchmark::State& state) {
+  const auto base_count = static_cast<std::size_t>(state.range(0));
+  const std::size_t tail_count = base_count / 10;
+  const auto keys = MakeKeys(base_count + tail_count);
+  const auto values = MakeValues(base_count + tail_count);
+
+  BenchmarkTempDir temp_dir;
+  const std::string wal_path = temp_dir.FilePath("kv_store.wal");
+  const std::string snapshot_path = temp_dir.FilePath("kv_store.snapshot");
+
+  {
+    kv::persistence::WriteAheadLog wal(wal_path);
+    kv::persistence::Snapshot snapshot(snapshot_path);
+    kv::store::KVStore store(&wal, &snapshot);
+    for (std::size_t index = 0; index < base_count; ++index) {
+      store.Set(keys[index], values[index]);
+    }
+    if (!store.CompactPersistence()) {
+      throw std::runtime_error("failed to compact benchmark snapshot");
+    }
+
+    for (std::size_t index = 0; index < tail_count; ++index) {
+      const std::size_t key_index = base_count + index;
+      store.Set(keys[key_index], values[key_index]);
+    }
+  }
+
+  for (auto _ : state) {
+    kv::persistence::WriteAheadLog wal(wal_path);
+    kv::persistence::Snapshot snapshot(snapshot_path);
+    kv::store::KVStore recovered(&wal, &snapshot);
+    const auto result = recovered.LoadSnapshot(snapshot);
+    benchmark::DoNotOptimize(recovered.ReplayFromWal(wal, result.wal_offset));
+    benchmark::DoNotOptimize(recovered.Size());
+  }
+
+  state.SetItemsProcessed(state.iterations() * (base_count + tail_count));
+}
+
+void BM_SnapshotCompaction(benchmark::State& state) {
+  const auto key_count = static_cast<std::size_t>(state.range(0));
+  const auto keys = MakeKeys(key_count);
+  const auto values = MakeValues(key_count);
+
+  for (auto _ : state) {
+    state.PauseTiming();
+    BenchmarkTempDir temp_dir;
+    const std::string wal_path = temp_dir.FilePath("kv_store.wal");
+    const std::string snapshot_path = temp_dir.FilePath("kv_store.snapshot");
+    kv::persistence::WriteAheadLog wal(wal_path);
+    kv::persistence::Snapshot snapshot(snapshot_path);
+    kv::store::KVStore store(&wal, &snapshot);
+    for (std::size_t index = 0; index < key_count; ++index) {
+      store.Set(keys[index], values[index]);
+    }
+    state.ResumeTiming();
+
+    benchmark::DoNotOptimize(store.CompactPersistence());
+    benchmark::ClobberMemory();
+  }
+
+  state.SetItemsProcessed(state.iterations() * key_count);
+}
+
 BENCHMARK(BM_Put)->Arg(1000)->Arg(10000);
 BENCHMARK(BM_Get)->Arg(1000)->Arg(10000);
 BENCHMARK(BM_Delete)->Arg(1000)->Arg(10000);
 BENCHMARK(BM_MixedReadWrite70_30)->Arg(1000)->Arg(10000);
 BENCHMARK(BM_RecoveryFromSnapshotAndWalTail)->Arg(1000)->Arg(10000);
+BENCHMARK(BM_RecoveryFromCompactedSnapshotAndWalTail)->Arg(1000)->Arg(10000);
+BENCHMARK(BM_SnapshotCompaction)->Arg(1000)->Arg(10000);
 
 }  // namespace

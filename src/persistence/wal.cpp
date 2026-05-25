@@ -265,6 +265,10 @@ void WriteAheadLog::Clear() {
   }
 }
 
+void WriteAheadLog::Rotate() {
+  Clear();
+}
+
 void WriteAheadLog::TruncateTo(std::uint64_t offset) {
   output_.close();
   output_.clear();

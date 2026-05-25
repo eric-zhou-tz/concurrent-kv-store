@@ -12,14 +12,7 @@ KVStore::KVStore(persistence::WriteAheadLog* wal,
 
 void KVStore::MaybeSnapshot() {
   if (snapshot_ != nullptr && writes_since_snapshot_ >= kSnapshotInterval) {
-    // The snapshot must record the WAL byte position that its in-memory map
-    // covers. WAL writes are flushed before memory mutation, so by the time we
-    // snapshot here the current WAL offset safely includes all checkpointed
-    // writes.
-    const std::uint64_t wal_offset =
-        (wal_ != nullptr) ? wal_->CurrentOffset() : 0;
-    snapshot_->Save(data_, wal_offset);
-    writes_since_snapshot_ = 0;
+    CompactPersistence();
   }
 }
 
@@ -86,7 +79,23 @@ bool KVStore::SaveSnapshot() {
 
   const std::uint64_t wal_offset =
       (wal_ != nullptr) ? wal_->CurrentOffset() : 0;
-  snapshot_->Save(data_, wal_offset);
+  snapshot_->SaveVerified(data_, wal_offset);
+  writes_since_snapshot_ = 0;
+  return true;
+}
+
+bool KVStore::CompactPersistence() {
+  if (snapshot_ == nullptr) {
+    return false;
+  }
+
+  // WAL rotation resets the replay position to zero. Write and verify the
+  // snapshot before touching WAL history so a failed snapshot cannot discard
+  // the only durable copy of recent mutations.
+  snapshot_->SaveVerified(data_, 0);
+  if (wal_ != nullptr) {
+    wal_->Rotate();
+  }
   writes_since_snapshot_ = 0;
   return true;
 }

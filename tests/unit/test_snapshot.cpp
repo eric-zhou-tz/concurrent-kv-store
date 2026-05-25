@@ -80,6 +80,17 @@ TEST_F(SnapshotTest, SaveAndLoadRoundTripEntriesAndWalOffset) {
   EXPECT_EQ(original, loaded);
 }
 
+TEST_F(SnapshotTest, SaveVerifiedWritesAndConfirmsSnapshotContents) {
+  Snapshot snapshot(snapshot_path_);
+  std::unordered_map<std::string, std::string> original{
+      {"alpha", "1"}, {"beta", "2"}};
+
+  snapshot.SaveVerified(original, 42);
+
+  EXPECT_TRUE(snapshot.Verify(original, 42));
+  EXPECT_FALSE(snapshot.Verify(original, 41));
+}
+
 TEST_F(SnapshotTest, EmptySnapshotFileIsTreatedAsNotLoaded) {
   WriteBinaryFile(snapshot_path_, "");
   Snapshot snapshot(snapshot_path_);

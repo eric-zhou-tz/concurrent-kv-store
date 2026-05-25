@@ -87,6 +87,15 @@ class WriteAheadLog {
   void Clear();
 
   /**
+   * @brief Rotates the WAL to a new empty log for future append records.
+   *
+   * Snapshot compaction uses rotation after a verified snapshot covers the
+   * current in-memory state. Recovery then loads the snapshot and replays the
+   * new WAL from offset zero.
+   */
+  void Rotate();
+
+  /**
    * @brief Truncates the WAL to an already-validated record boundary.
    *
    * @param offset Byte offset to keep through.

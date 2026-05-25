@@ -10,6 +10,7 @@
 ## 0.4.x - Storage Safety
 
 - WAL checksums
+- Verified snapshot compaction with WAL rotation
 - Explicit endianness for binary formats
 - More corruption and recovery fixtures
 - Configurable durability policies
@@ -24,8 +25,7 @@
 ## 0.6.x - Storage Engine Evolution
 
 - Segmented WAL files
-- Snapshot compaction
-- Log truncation after covered checkpoints
+- Optional WAL prefix truncation or multi-generation WAL metadata
 - Optional memory-mapped or log-structured storage experiments
 
 ## 1.0.0 - Stable Local KV Store

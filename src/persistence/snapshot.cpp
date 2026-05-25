@@ -123,6 +123,25 @@ void Snapshot::Save(
   }
 }
 
+void Snapshot::SaveVerified(
+    const std::unordered_map<std::string, std::string>& store,
+    std::uint64_t wal_offset) const {
+  Save(store, wal_offset);
+  if (!Verify(store, wal_offset)) {
+    throw std::runtime_error("snapshot verification failed: " + path_);
+  }
+}
+
+bool Snapshot::Verify(
+    const std::unordered_map<std::string, std::string>& expected_store,
+    std::uint64_t expected_wal_offset) const {
+  std::unordered_map<std::string, std::string> loaded;
+  const SnapshotLoadResult result = Load(loaded);
+  return result.loaded && result.entry_count == expected_store.size() &&
+         result.wal_offset == expected_wal_offset &&
+         loaded == expected_store;
+}
+
 void Snapshot::Clear() const {
   // Clear both the committed snapshot and any abandoned temp file from an
   // interrupted save. The in-memory store decides separately whether data

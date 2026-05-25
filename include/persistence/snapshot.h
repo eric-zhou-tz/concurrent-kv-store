@@ -49,6 +49,31 @@ class Snapshot {
             std::uint64_t wal_offset = 0) const;
 
   /**
+   * @brief Writes and verifies a snapshot before returning.
+   *
+   * Verification reloads the committed snapshot and checks that its entry
+   * count, covered WAL offset, and key/value contents match the expected
+   * in-memory state. Callers that plan to delete or rotate WAL history should
+   * use this method instead of `Save()`.
+   *
+   * @param store In-memory key-value data to persist.
+   * @param wal_offset WAL byte offset covered by this snapshot.
+   * @throws std::runtime_error if writing or verification fails.
+   */
+  void SaveVerified(const std::unordered_map<std::string, std::string>& store,
+                    std::uint64_t wal_offset = 0) const;
+
+  /**
+   * @brief Verifies the committed snapshot matches expected state and metadata.
+   *
+   * @param expected_store Expected key-value data.
+   * @param expected_wal_offset Expected covered WAL byte offset.
+   * @return `true` when the snapshot is present and matches exactly.
+   */
+  bool Verify(const std::unordered_map<std::string, std::string>& expected_store,
+              std::uint64_t expected_wal_offset) const;
+
+  /**
    * @brief Removes the current snapshot file and any temporary snapshot file.
    *
    * Missing files are treated as already cleared.

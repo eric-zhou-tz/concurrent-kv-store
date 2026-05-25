@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.4.0 -> Snapshot Compaction and WAL Rotation
+
+- Added verified snapshot compaction with WAL rotation. `COMPACT`/`SNAPSHOT`
+  writes a full snapshot, verifies the committed file can be loaded and matches
+  in-memory state, then rotates the WAL to an empty log.
+- Preserved recovery correctness after compaction: startup loads the compacted
+  snapshot and replays the current WAL tail from offset zero.
+- Added failure-safety coverage for snapshot write failure, crash before WAL
+  rotation, missing WAL after a valid snapshot, corrupted snapshots with valid
+  WAL fallback, and repeated compaction idempotence.
+- Added benchmark coverage for compacted snapshot recovery and snapshot
+  compaction cost.
+
 ## v0.3.0 -> Modern CMake + C++20 Project Foundation
 
 - Added WAL v2 records with CRC32 checksums over payload bytes. Replay now

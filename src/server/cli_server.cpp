@@ -59,6 +59,13 @@ void CliServer::Execute(const parser::Command& command, std::ostream& output, bo
         store_.ClearPersistence();
         output << "OK persistence cleared\n";
         break;
+      case parser::CommandType::kCompactPersistence:
+        if (store_.CompactPersistence()) {
+          output << "OK snapshot compacted\n";
+        } else {
+          output << "ERR snapshot persistence is not configured\n";
+        }
+        break;
       case parser::CommandType::kHelp:
         PrintHelp(output);
         break;
@@ -84,6 +91,7 @@ void CliServer::PrintHelp(std::ostream& output) const {
   output << "  SET <key> <value>\n";
   output << "  GET <key>\n";
   output << "  DEL|DELETE <key>\n";
+  output << "  COMPACT|SNAPSHOT\n";
   output << "  CLEAR PERSISTENCE\n";
   output << "  HELP\n";
   output << "  EXIT\n";

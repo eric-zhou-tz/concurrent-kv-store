@@ -43,7 +43,9 @@ baseline.
 | `BM_Get` | Successful lookups | Preloads deterministic keys before timing. |
 | `BM_Delete` | Delete throughput | Preload is outside timed region. |
 | `BM_MixedReadWrite70_30` | 70% read / 30% write flow | Deterministic bounded keyspace. |
-| `BM_RecoveryFromSnapshotAndWalTail` | Snapshot load plus WAL tail replay | Uses temp files created by the benchmark. |
+| `BM_RecoveryFromSnapshotAndWalTail` | Snapshot load plus WAL tail replay | Uses an uncompacted WAL with covered offset replay. |
+| `BM_RecoveryFromCompactedSnapshotAndWalTail` | Snapshot plus rotated WAL tail recovery | Models the normal compacted recovery path. |
+| `BM_SnapshotCompaction` | Snapshot verification plus WAL rotation | Times full-state snapshot lifecycle cleanup. |
 
 ## Environment Template
 
@@ -71,6 +73,8 @@ Notes:
 | `BM_Delete/1000` | TBD | TBD | TBD | TBD |
 | `BM_MixedReadWrite70_30/1000` | TBD | TBD | TBD | TBD |
 | `BM_RecoveryFromSnapshotAndWalTail/1000` | TBD | TBD | TBD | TBD |
+| `BM_RecoveryFromCompactedSnapshotAndWalTail/1000` | TBD | TBD | TBD | TBD |
+| `BM_SnapshotCompaction/1000` | TBD | TBD | TBD | TBD |
 
 ## Interpretation Notes
 
@@ -78,6 +82,8 @@ Notes:
   latency.
 - Recovery benchmarks include filesystem work and should be compared only
   across similar storage media.
+- Compacted recovery should replay less WAL than full WAL recovery, while
+  snapshot compaction pays the cost of writing and verifying the full map.
 - Benchmarks are deterministic but not isolated from OS scheduling. Use a quiet
   machine and Release builds for publishable numbers.
 - Future durable write benchmarks should separate buffered append cost from

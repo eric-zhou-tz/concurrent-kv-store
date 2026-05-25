@@ -36,6 +36,7 @@ KVStore
 - `Contains(key)`
 - `Size()`
 - `Clear()`
+- `CompactPersistence()`
 
 When constructed with persistence dependencies, mutating operations append to
 the WAL before updating memory. This keeps successful in-memory writes
@@ -86,6 +87,10 @@ not apply the bad record. Recovery may call `ReplayFromAndTruncate()` to remove
 the untrusted suffix after `last_good_offset`; truncation happens only after
 replay has identified a validated record boundary.
 
+Snapshot compaction uses WAL rotation rather than prefix truncation. After a
+verified compacted snapshot is committed, the current WAL is replaced with a
+new empty file. Future mutations append to the new WAL from offset zero.
+
 ### Snapshot
 
 `Snapshot` writes full materialized state to a temp file and atomically replaces
@@ -100,6 +105,41 @@ the committed snapshot. Each snapshot stores:
 Startup recovery loads the latest snapshot first, then replays WAL records
 after the covered byte offset. With WAL v2, the post-snapshot tail is
 checksum-verified record by record before mutations are applied.
+
+Snapshot files are written to a temporary path first and renamed over the
+committed snapshot only after the write completes. `SaveVerified()` then loads
+the committed snapshot and checks the expected entry count, covered WAL offset,
+and key/value contents before callers are allowed to clean up WAL history.
+
+## Snapshot Compaction
+
+The project currently chooses WAL rotation for compaction:
+
+1. Flush the current WAL and snapshot the in-memory map with covered WAL offset
+   `0`, because the next WAL generation starts at byte zero.
+2. Verify the committed snapshot by loading it and comparing metadata and
+   contents against memory.
+3. Rotate the WAL to a new empty file only after verification succeeds.
+4. Continue appending new mutations to the empty WAL.
+
+Normal recovery after compaction is:
+
+1. Load the verified snapshot.
+2. Replay the current WAL from the snapshot's stored offset, normally zero.
+
+Failure behavior:
+
+- Snapshot write failure: the committed snapshot is not replaced, and the WAL
+  is not rotated.
+- Snapshot verification failure: the WAL is not rotated.
+- Crash before WAL rotation: recovery may replay still-present covered WAL
+  records, but the deterministic `SET`/`DELETE` log preserves final state.
+- Crash after WAL rotation: recovery loads the compacted snapshot and replays
+  the new WAL from zero.
+- Missing WAL after a valid compacted snapshot: recovery loads the snapshot and
+  treats the missing WAL as an empty tail.
+- Corrupted snapshot with valid WAL: snapshot loading fails without touching the
+  WAL, so operators/tests can fall back to full WAL replay from offset zero.
 
 ### CLI Boundary
 
@@ -118,6 +158,7 @@ directly.
 | WAL replay | O(N) | Applies ordered mutation records. |
 | Snapshot save | O(N) | Writes the full materialized map. |
 | Snapshot load | O(N) | Replaces live map after successful parse. |
+| Snapshot compaction | O(N) | Writes/verifies full snapshot, then rotates WAL. |
 
 `K` is key size, `V` is value size, and `N` is stored entry or WAL record count,
 depending on the operation.
@@ -129,6 +170,7 @@ depending on the operation.
 | `std::unordered_map` live state | Simple average-case hot path, no sorted iteration guarantees. |
 | Flush on every WAL append | Conservative durability, lower write throughput. |
 | Full snapshots | Easy recovery model, higher checkpoint write amplification. |
+| WAL rotation after snapshots | Simple cleanup policy, but crash before rotation can replay covered records. |
 | Single process / single writer | Clean invariants while persistence matures, no concurrent clients yet. |
 | Host-endian binary format | Simple early implementation, future portability work needed. |
 | CRC32 WAL records | Dependency-free corruption detection, not cryptographic integrity. |
@@ -136,4 +178,5 @@ depending on the operation.
 ## Future Direction
 
 The next architecture steps are reader/writer synchronization, segmented WAL
-files, snapshot compaction, and eventually a log-structured storage engine.
+files, explicit binary endianness, and eventually a log-structured storage
+engine.
